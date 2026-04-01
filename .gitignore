@@ -1,0 +1,15 @@
+venv/
+env/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+**/migrations/
+*.pkl
+node_modules/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+staticfiles/
