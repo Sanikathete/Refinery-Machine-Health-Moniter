@@ -12,12 +12,12 @@ class SensorDataProcessor:
     VALID_MACHINES = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
 
     def __init__(self):
-        self.thresholds = {
-            'temperature': (0, 200),
-            'pressure': (0, 150),
-            'vibration': (0, 25),
-            'flow_rate': (0, 150),
-            'humidity': (0, 100),
+        self.minimums = {
+            'temperature': 0,
+            'pressure': 0,
+            'vibration': 0,
+            'flow_rate': 0,
+            'humidity': 0,
         }
 
         pkl_dir = settings.ML_MODELS_DIR
@@ -34,15 +34,15 @@ class SensorDataProcessor:
                 f"Invalid machine_id: {data['machine_id']}. Must be one of {self.VALID_MACHINES}"
             )
 
-        for field, (min_val, max_val) in self.thresholds.items():
+        for field, min_val in self.minimums.items():
             try:
                 value = float(data[field])
             except (ValueError, TypeError):
                 raise SensorDataException(f"Field '{field}' must be a number, got: {data[field]}")
 
-            if not min_val <= value <= max_val:
+            if value < min_val:
                 raise SensorDataException(
-                    f"Field '{field}' value {value} is out of range ({min_val}-{max_val})"
+                    f"Field '{field}' value {value} is invalid. Must be greater than or equal to {min_val}."
                 )
 
         return True

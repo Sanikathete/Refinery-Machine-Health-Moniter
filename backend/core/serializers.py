@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from core.models import SensorReading, Alert, MaintenanceReport
+from core.models import SensorReading, Alert, MaintenanceReport, MaintenanceSchedule
 
 
 class SensorReadingSerializer(serializers.ModelSerializer):
@@ -32,3 +32,22 @@ class MaintenanceReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = MaintenanceReport
         fields = '__all__'
+
+
+class MaintenanceScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MaintenanceSchedule
+        fields = '__all__'
+
+
+class MaintenanceScheduleCreateSerializer(serializers.Serializer):
+    machine_id = serializers.CharField(max_length=50)
+    alert_id = serializers.IntegerField(required=False, allow_null=True)
+    scheduled_for = serializers.DateTimeField()
+    priority = serializers.ChoiceField(
+        choices=[choice for choice, _ in MaintenanceSchedule.PRIORITY_CHOICES],
+        default=MaintenanceSchedule.PRIORITY_MEDIUM,
+        required=False,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
+    assigned_to = serializers.CharField(required=False, allow_blank=True, default='')
