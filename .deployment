@@ -1,0 +1,2 @@
+﻿[config]
+command = cd backend && pip install -r requirements.txt
