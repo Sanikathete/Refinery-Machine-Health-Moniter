@@ -1,0 +1,11 @@
+﻿trigger:
+  - main
+pool:
+  vmImage: 'ubuntu-latest'
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.12'
+- script: |
+    cd backend
+    pip install -r requirements.txt
