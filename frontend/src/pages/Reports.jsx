@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+﻿import { useEffect, useMemo, useState } from 'react'
 import api from '../api/axios'
 
 const MACHINE_OPTIONS = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
@@ -12,59 +11,29 @@ function cleanMarkdownText(text) {
     .replace(/^#{1,6}\s*/gm, '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/^\s*[-*]\s+/gm, '• ')
+    .replace(/^\s*[-*]\s+/gm, '- ')
+    .replace(
+      /Note:\s*This fallback report was generated because Gemini was unavailable\.?/gi,
+      '',
+    )
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
-function summarizeReportText(text) {
-  if (!text) return 'No summary available.'
-  const cleaned = cleanMarkdownText(text)
-  const filtered = cleaned
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter(
-      (line) =>
-        !/^date:/i.test(line) &&
-        !/^report id:/i.test(line) &&
-        !/^machine tag:/i.test(line) &&
-        !/^location:/i.test(line) &&
-        !/^maintenance report:/i.test(line),
-    )
-    .join(' ')
-  const compact = filtered.replace(/\s+/g, ' ').trim()
-  if (compact.length <= 170) return compact
-  return `${compact.slice(0, 170)}...`
-}
-
-function getReportLines(text) {
-  return cleanMarkdownText(text)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-}
-
-function classifyReportLine(line) {
-  if (/^•\s+/.test(line)) return 'bullet'
-  if (/^\d+\.\s+/.test(line)) return 'section'
-  if (/^[A-Za-z][A-Za-z ]+:\s*$/.test(line)) return 'section'
-  if (
-    /^(date:|report id:|machine tag:|location:|maintenance report:|priority level:|machine status summary:|root cause analysis:|recommended actions:)/i.test(
-      line,
-    )
-  ) {
-    return 'section'
-  }
-  return 'text'
+function buildPreview(text) {
+  const cleaned = cleanMarkdownText(text).replace(/\s+/g, ' ').trim()
+  if (!cleaned) return 'No summary available.'
+  return cleaned.length <= 120 ? cleaned : `${cleaned.slice(0, 120)}...`
 }
 
 export default function Reports() {
   const [reports, setReports] = useState([])
   const [expandedReportId, setExpandedReportId] = useState(null)
   const [generateMachine, setGenerateMachine] = useState(MACHINE_OPTIONS[0])
+  const [machineStatusMap, setMachineStatusMap] = useState({})
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [deletingReportId, setDeletingReportId] = useState(null)
   const [error, setError] = useState('')
 
   const fetchReports = async () => {
@@ -72,7 +41,26 @@ export default function Reports() {
     setError('')
     try {
       const response = await api.get('/reports/')
-      setReports(Array.isArray(response.data) ? response.data : [])
+      const nextReports = Array.isArray(response.data) ? response.data : []
+      setReports(nextReports)
+
+      const uniqueMachines = [...new Set(nextReports.map((report) => report.machine_id).filter(Boolean))]
+      const statusRequests = uniqueMachines.map((machineId) =>
+        api
+          .get('/readings/', { params: { machine_id: machineId } })
+          .then((readingResponse) => {
+            const latest = Array.isArray(readingResponse.data) ? readingResponse.data[0] : null
+            if (!latest) return { machineId, status: 'UNKNOWN' }
+            return { machineId, status: latest.failure ? 'FAILURE' : 'HEALTHY' }
+          })
+          .catch(() => ({ machineId, status: 'UNKNOWN' })),
+      )
+      const statusData = await Promise.all(statusRequests)
+      const statusMap = {}
+      statusData.forEach(({ machineId, status }) => {
+        statusMap[machineId] = status
+      })
+      setMachineStatusMap(statusMap)
     } catch (fetchError) {
       setError(fetchError.message || 'Unable to fetch reports.')
     } finally {
@@ -97,95 +85,132 @@ export default function Reports() {
     }
   }
 
+  const handleRemoveReport = async (report) => {
+    if (!report?.id) return
+    const confirmed = window.confirm(
+      `Remove this report for ${report.machine_id || 'Unknown Machine'} created at ${
+        report.created_at ? new Date(report.created_at).toLocaleString() : 'N/A'
+      }?`,
+    )
+    if (!confirmed) return
+
+    setDeletingReportId(report.id)
+    setError('')
+    try {
+      await api.delete(`/reports/${report.id}/`)
+      setReports((prev) => prev.filter((item) => item.id !== report.id))
+      if (expandedReportId === report.id) {
+        setExpandedReportId(null)
+      }
+    } catch (deleteError) {
+      setError(deleteError.message || 'Unable to remove report.')
+    } finally {
+      setDeletingReportId(null)
+    }
+  }
+
+  const sortedReports = useMemo(
+    () =>
+      [...reports].sort((a, b) => {
+        const aTime = new Date(a.created_at || 0).getTime()
+        const bTime = new Date(b.created_at || 0).getTime()
+        return bTime - aTime
+      }),
+    [reports],
+  )
+
   return (
-    <motion.section
-      className="page"
-      initial={{ opacity: 0, y: 24 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, ease: 'easeOut' }}
-    >
-      <div className="toolbar">
+    <section className="app-page">
+      <div className="template-header-card">
         <div>
-          <h2 className="section-title">AI Reports</h2>
-          <p className="section-subtitle">Inspect generated maintenance insights by machine.</p>
+          <div className="template-sublabel">GEMINI-POWERED MACHINE HEALTH SUMMARIES</div>
+          <h2 className="template-page-title">AI-Generated Reports</h2>
         </div>
 
-        <div className="card" style={{ padding: '0.75rem' }}>
-          <label htmlFor="report-machine" style={{ fontSize: '0.9rem', fontWeight: '600' }}>
-            Generate for machine
-          </label>
-          <div style={{ display: 'flex', gap: '0.55rem', marginTop: '0.45rem' }}>
-            <select
-              id="report-machine"
-              className="select"
-              value={generateMachine}
-              onChange={(event) => setGenerateMachine(event.target.value)}
-            >
-              {MACHINE_OPTIONS.map((machine) => (
-                <option value={machine} key={machine}>
-                  {machine}
-                </option>
-              ))}
-            </select>
-            <button className="btn btn-primary" onClick={handleGenerate} disabled={generating}>
-              {generating ? 'Generating...' : 'Generate Report'}
-            </button>
-          </div>
+        <div className="reports-header-controls">
+          <select
+            className="template-input template-select"
+            value={generateMachine}
+            onChange={(event) => setGenerateMachine(event.target.value)}
+          >
+            {MACHINE_OPTIONS.map((machine) => (
+              <option value={machine} key={machine}>
+                {machine}
+              </option>
+            ))}
+          </select>
+          <button className="btn-template-primary" onClick={handleGenerate} disabled={generating}>
+            {generating ? (
+              <span className="btn-loading-wrap">
+                <i className="fas fa-spinner fa-spin" /> Generating...
+              </span>
+            ) : (
+              'Generate Report'
+            )}
+          </button>
         </div>
       </div>
 
       {loading ? <p className="status-text status-loading">Loading reports...</p> : null}
       {error ? <p className="status-text status-error">{error}</p> : null}
 
-      <div className="reports-grid">
-        {reports.map((report) => {
+      <div className="reports-grid-template">
+        {sortedReports.map((report) => {
+          const status = machineStatusMap[report.machine_id] || 'UNKNOWN'
           const isExpanded = expandedReportId === report.id
+          const borderClass = status === 'FAILURE' ? 'report-failure' : status === 'HEALTHY' ? 'report-healthy' : 'report-unknown'
+
           return (
-            <article className="report-card card" key={report.id}>
-              <div className="report-head">
+            <article key={report.id} className={`report-card-template wow fadeInDown is-visible ${borderClass}`}>
+              <div className="report-card-top">
                 <div>
                   <h3>{report.machine_id || 'Unknown Machine'}</h3>
-                  <p className="card-meta">
-                    {report.created_at ? new Date(report.created_at).toLocaleString() : 'Date unavailable'}
-                  </p>
+                  <span className={`status-pill ${status === 'FAILURE' ? 'badge-failure' : status === 'HEALTHY' ? 'badge-healthy' : 'badge-pending'}`}>
+                    {status}
+                  </span>
                 </div>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => setExpandedReportId(isExpanded ? null : report.id)}
-                >
-                  {isExpanded ? 'Hide' : 'Expand'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span className="card-meta">
+                    {report.created_at ? new Date(report.created_at).toLocaleString() : 'Date unavailable'}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-outline-danger"
+                    onClick={() => handleRemoveReport(report)}
+                    disabled={deletingReportId === report.id}
+                  >
+                    {deletingReportId === report.id ? 'Removing...' : 'Remove'}
+                  </button>
+                </div>
               </div>
 
-              <p>{summarizeReportText(report.gemini_explanation)}</p>
+              <p className="report-preview-text">{buildPreview(report.gemini_explanation)}</p>
 
-              <AnimatePresence>
-                {isExpanded ? (
-                  <motion.div
-                    className="report-full"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.25 }}
-                  >
-                    {getReportLines(report.gemini_explanation || report.root_cause || 'No detailed report available.').map(
-                      (line, index) => (
-                        <p key={`${report.id}-${index}`} className={`report-line report-line-${classifyReportLine(line)}`}>
-                          {line}
-                        </p>
-                      ),
-                    )}
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
+              <button
+                type="button"
+                className="expand-btn"
+                onClick={() => setExpandedReportId(isExpanded ? null : report.id)}
+              >
+                Expand
+                <i className={`fas fa-chevron-down ${isExpanded ? 'rotated' : ''}`} />
+              </button>
+
+              <div className={`report-expand-panel ${isExpanded ? 'expanded' : ''}`}>
+                <div className="report-full-text-box">
+                  {cleanMarkdownText(
+                    report.gemini_explanation || report.root_cause || 'No detailed report available.',
+                  )}
+                </div>
+              </div>
             </article>
           )
         })}
       </div>
 
-      {!loading && reports.length === 0 ? (
-        <p className="status-text">No reports generated yet. Create one using the panel above.</p>
+      {!loading && sortedReports.length === 0 ? (
+        <p className="status-text">No reports generated yet. Create one using the controls above.</p>
       ) : null}
-    </motion.section>
+    </section>
   )
 }
+

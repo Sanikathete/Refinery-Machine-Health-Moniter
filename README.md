@@ -101,6 +101,25 @@ JSON Response returned to frontend
 
 ---
 
+## Deployment Notes (Azure App Service + VM PostgreSQL)
+
+If you do not want Azure Database for PostgreSQL, you can deploy only the app on Azure and connect to PostgreSQL running on your own VM.
+
+1. In Azure App Service environment variables, set:
+   - `USE_SQLITE=False`
+   - `DB_HOST=<your-vm-ip-or-dns>`
+   - `DB_PORT=5432`
+   - `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+   - `DB_SSLMODE=prefer` (or empty if your VM PostgreSQL has no SSL)
+2. Ensure your VM firewall/security group allows inbound PostgreSQL (`5432`) from Azure App Service outbound IPs.
+3. Keep `backend/data/synthetic_data_Predictive_maintenance.csv` in the deployed package.
+4. Seed DB from CSV with:
+   - `python manage.py seed_readings_from_csv --replace`
+5. Optional startup seeding:
+   - Set `SEED_FROM_CSV=true` and use `backend/deploy.sh`.
+
+---
+
 ## Author
 
 Built as a final interview project demonstrating full-stack development, machine learning integration, and generative AI usage in a real-world industrial monitoring scenario.

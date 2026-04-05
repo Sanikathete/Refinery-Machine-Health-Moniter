@@ -67,7 +67,7 @@ USE_SQLITE = os.getenv('USE_SQLITE')
 if USE_SQLITE is None:
     USE_SQLITE = DEBUG
 else:
-    USE_SQLITE = USE_SQLITE.lower() == 'true'
+    USE_SQLITE = USE_SQLITE.strip().lower() == 'true'
 
 if USE_SQLITE:
     DATABASES = {
@@ -77,6 +77,8 @@ if USE_SQLITE:
         }
     }
 else:
+    db_sslmode = os.getenv('DB_SSLMODE', 'prefer').strip()
+    db_options = {'sslmode': db_sslmode} if db_sslmode else {}
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
@@ -85,9 +87,8 @@ else:
             'PASSWORD': os.getenv('DB_PASSWORD', ''),
             'HOST': os.getenv('DB_HOST', ''),
             'PORT': os.getenv('DB_PORT', '5432'),
-            'OPTIONS': {
-                'sslmode': os.getenv('DB_SSLMODE', 'require'),
-            },
+            'OPTIONS': db_options,
+            'CONN_MAX_AGE': int(os.getenv('DB_CONN_MAX_AGE', '60')),
         }
     }
 

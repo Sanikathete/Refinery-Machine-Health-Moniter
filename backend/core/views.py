@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from django.utils import timezone
+from django.contrib.auth import authenticate, get_user_model
 from core.models import SensorReading, Alert, MaintenanceReport, MaintenanceSchedule
 from core.serializers import (
     SensorReadingSerializer, SensorInputSerializer,
@@ -15,13 +16,25 @@ from core.ml.predictor import MLPredictor
 from core.services.alert_manager import AlertManager
 from core.services.report_generator import GeminiReportGenerator
 
+User = get_user_model()
+
+TEMPERATURE_LIMIT = 91.0
+PRESSURE_LIMIT = 225.0
+VIBRATION_LIMIT = 0.50
+FLOW_RATE_MIN = 116.0
+HUMIDITY_LIMIT = 48.0
+
 
 def build_fallback_report(machine_id, readings_list):
     if not readings_list:
         return (
             f"Machine Status Summary: No recent readings available for {machine_id}.\n"
-            "Root Cause Analysis: Data unavailable.\n"
-            "Recommended Actions: Collect fresh sensor data and retry.\n"
+            "Root Cause Analysis: Data unavailable, so fault classification is inconclusive.\n"
+            "Recommended Actions:\n"
+            "1. Reconnect the sensor stream and verify data ingestion.\n"
+            "2. Capture a fresh batch of readings over the next 10-15 minutes.\n"
+            "3. Re-run prediction and report generation once data stabilizes.\n"
+            "4. If data remains unavailable, escalate to instrumentation support.\n"
             "Priority Level: Medium"
         )
 
@@ -31,36 +44,72 @@ def build_fallback_report(machine_id, readings_list):
     vibration = float(latest.get('vibration', 0))
     flow = float(latest.get('flow_rate', 0))
     humidity = float(latest.get('humidity', 0))
+    latest_failure_flag = bool(latest.get('failure', False))
+    recent_failure_count = sum(1 for row in readings_list if bool(row.get('failure', False)))
 
     anomalies = []
-    if temp > 95:
+    if temp > TEMPERATURE_LIMIT:
         anomalies.append('high temperature')
-    if pressure > 135 or pressure < 95:
-        anomalies.append('pressure out of expected range')
-    if vibration > 1.0:
+    if pressure > PRESSURE_LIMIT:
+        anomalies.append('high pressure')
+    if vibration > VIBRATION_LIMIT:
         anomalies.append('elevated vibration')
-    if flow < 35:
+    if flow < FLOW_RATE_MIN:
         anomalies.append('low flow rate')
-    if humidity > 70:
+    if humidity > HUMIDITY_LIMIT:
         anomalies.append('high humidity')
 
-    if anomalies:
+    if anomalies or latest_failure_flag or recent_failure_count > 0:
         status = f"Abnormal conditions detected ({', '.join(anomalies)})."
-        root_cause = "Most likely mechanical stress and process instability under current load."
-        actions = "Inspect bearings/seals, validate pressure control, and schedule maintenance."
-        priority = "High" if len(anomalies) > 1 else "Medium"
+        if not anomalies:
+            status = (
+                "Failure trend detected from recent model predictions, even though individual sensor values "
+                "are near threshold bands."
+            )
+        root_cause = (
+            "Most likely mechanical stress and process instability under current load, potentially linked to "
+            "rotating component wear, pressure-control drift, or restricted flow."
+        )
+        actions = (
+            "1. Inspect bearings, seals, and couplings for wear or misalignment.\n"
+            "2. Validate pressure-control loop response and check valves/line restrictions.\n"
+            "3. Verify vibration sensor mounting and recalibrate if readings are unstable.\n"
+            "4. Confirm flow instrumentation health and compare with process setpoints.\n"
+            "5. Schedule corrective maintenance in the nearest operational window."
+        )
+        if recent_failure_count >= 2 or latest_failure_flag:
+            priority = "High"
+        else:
+            priority = "Medium"
+        monitoring = (
+            "Monitoring Plan: Track temperature, pressure, and vibration every 15-30 minutes. "
+            f"Escalate immediately if temperature exceeds {TEMPERATURE_LIMIT}C, "
+            f"pressure exceeds {PRESSURE_LIMIT}, vibration exceeds {VIBRATION_LIMIT} mm/s, "
+            f"flow rate drops below {FLOW_RATE_MIN} L/min, or humidity exceeds {HUMIDITY_LIMIT}%."
+        )
     else:
         status = "No major anomalies detected in the latest reading."
-        root_cause = "System appears stable with current operating profile."
-        actions = "Continue monitoring and maintain preventive maintenance schedule."
+        root_cause = (
+            "System appears stable with the current operating profile and no dominant fault signature."
+        )
+        actions = (
+            "1. Continue preventive maintenance as per schedule.\n"
+            "2. Verify calibration of pressure and flow sensors during routine checks.\n"
+            "3. Keep vibration trend monitoring active for early anomaly detection.\n"
+            "4. Maintain housekeeping around humidity and cooling control."
+        )
         priority = "Low"
+        monitoring = (
+            "Monitoring Plan: Continue standard interval logging and escalate if any reading drifts "
+            "beyond operating bands."
+        )
 
     return (
         f"Machine Status Summary: {status}\n"
         f"Root Cause Analysis: {root_cause}\n"
-        f"Recommended Actions: {actions}\n"
-        f"Priority Level: {priority}\n"
-        "Note: This fallback report was generated because Gemini was unavailable."
+        f"Recommended Actions:\n{actions}\n"
+        f"{monitoring}\n"
+        f"Priority Level: {priority}"
     )
 
 
@@ -73,30 +122,113 @@ def build_fallback_explanation(sensor_data, prediction):
     label = str(prediction.get('prediction_label', 'HEALTHY')).upper()
     confidence = float(prediction.get('confidence_score', 0)) * 100
 
-    flags = []
-    if temperature > 95:
-        flags.append('temperature is above the safe operating band')
-    if pressure > 135 or pressure < 95:
-        flags.append('pressure is outside the normal range')
-    if vibration > 1.0:
-        flags.append('vibration is elevated')
-    if flow_rate < 35:
-        flags.append('flow rate is lower than expected')
-    if humidity > 70:
-        flags.append('humidity is high')
+    def upper_limit_assessment(value, limit):
+        if value > limit:
+            return 'abnormal'
+        margin = limit * 0.1
+        if value >= (limit - margin):
+            return 'borderline'
+        return 'normal'
 
-    if not flags:
-        return (
-            f"The model predicts {label} with {confidence:.1f}% confidence. "
-            "Sensor values are within expected operating ranges, indicating stable machine behavior. "
-            "Continue routine monitoring and preventive maintenance."
+    def lower_limit_assessment(value, limit):
+        if value < limit:
+            return 'abnormal'
+        margin = limit * 0.1
+        if value <= (limit + margin):
+            return 'borderline'
+        return 'normal'
+
+    assessments = {
+        'temperature': upper_limit_assessment(temperature, TEMPERATURE_LIMIT),
+        'pressure': upper_limit_assessment(pressure, PRESSURE_LIMIT),
+        'vibration': upper_limit_assessment(vibration, VIBRATION_LIMIT),
+        'flow_rate': lower_limit_assessment(flow_rate, FLOW_RATE_MIN),
+        'humidity': upper_limit_assessment(humidity, HUMIDITY_LIMIT),
+    }
+
+    status_line = (
+        f"Summary: Prediction is {label} with {confidence:.1f}% confidence for machine {sensor_data.get('machine_id', 'N/A')}."
+    )
+    sensor_line = (
+        "Sensor Assessment: "
+        f"Temperature {temperature:.1f}C ({assessments['temperature']}), "
+        f"Pressure {pressure:.1f} hPa ({assessments['pressure']}), "
+        f"Vibration {vibration:.2f} mm/s ({assessments['vibration']}), "
+        f"Flow Rate {flow_rate:.1f} L/min ({assessments['flow_rate']}), "
+        f"Humidity {humidity:.1f}% ({assessments['humidity']})."
+    )
+
+    if label == 'FAILURE':
+        root_cause = (
+            "Root Cause Hypothesis: The combined stress pattern indicates possible bearing wear, "
+            "flow restriction, or process-control drift."
+        )
+        risk = (
+            "Operational Risk: If unaddressed, the machine may experience efficiency loss, unstable output, "
+            "or unplanned downtime in the near term."
+        )
+        actions = (
+            "Recommended Actions:\n"
+            "1. Inspect bearings and rotating assemblies.\n"
+            "2. Verify pressure-control valves and line restrictions.\n"
+            "3. Check lubrication condition and shaft alignment.\n"
+            "4. Validate flow instrumentation and recalibrate if needed.\n"
+            "5. Schedule corrective maintenance in the next shift."
+        )
+        monitoring = (
+            "Monitoring Plan: Track vibration, pressure, and temperature every 15-30 minutes. "
+            f"Escalate immediately if temperature exceeds {TEMPERATURE_LIMIT}C, "
+            f"pressure exceeds {PRESSURE_LIMIT}, vibration exceeds {VIBRATION_LIMIT} mm/s, "
+            f"flow rate drops below {FLOW_RATE_MIN} L/min, or humidity exceeds {HUMIDITY_LIMIT}%."
+        )
+    else:
+        root_cause = (
+            "Root Cause Hypothesis: Current readings suggest stable operating conditions with no dominant fault signature."
+        )
+        risk = (
+            "Operational Risk: Low immediate risk, but sustained drift in pressure, vibration, or flow can still "
+            "reduce reliability over time."
+        )
+        actions = (
+            "Recommended Actions:\n"
+            "1. Continue routine preventive maintenance.\n"
+            "2. Inspect for early vibration trend changes.\n"
+            "3. Verify calibration of pressure and flow sensors.\n"
+            "4. Maintain housekeeping around humidity control."
+        )
+        monitoring = (
+            "Monitoring Plan: Continue standard interval logging and escalate if "
+            f"temperature exceeds {TEMPERATURE_LIMIT}C, pressure exceeds {PRESSURE_LIMIT}, "
+            f"vibration exceeds {VIBRATION_LIMIT} mm/s, flow rate drops below {FLOW_RATE_MIN} L/min, "
+            f"or humidity exceeds {HUMIDITY_LIMIT}%."
         )
 
-    return (
-        f"The model predicts {label} with {confidence:.1f}% confidence. "
-        f"Key signal drivers: {', '.join(flags)}. "
-        "These patterns suggest rising mechanical stress; schedule targeted inspection and corrective maintenance."
-    )
+    return "\n".join([status_line, sensor_line, root_cause, risk, actions, monitoring])
+
+
+def enforce_report_consistency(report_text, latest_reading):
+    if not report_text:
+        return report_text
+
+    latest_failure = bool(latest_reading.get('failure', False)) if latest_reading else False
+    if not latest_failure:
+        return report_text
+
+    normalized = str(report_text)
+    lower_text = normalized.lower()
+    if 'no major anomalies detected in the latest reading' in lower_text:
+        normalized = normalized.replace(
+            'Machine Status Summary: No major anomalies detected in the latest reading.',
+            (
+                'Machine Status Summary: Failure trend detected in the latest reading and '
+                'operational anomalies require immediate attention.'
+            ),
+        )
+        normalized = normalized.replace(
+            'Priority Level: Low',
+            'Priority Level: High',
+        )
+    return normalized
 
 
 def infer_priority(prediction_label, confidence_score):
@@ -119,40 +251,28 @@ def apply_safety_override(sensor_data, prediction):
     flow_rate = float(sensor_data.get('flow_rate', 0))
     humidity = float(sensor_data.get('humidity', 0))
 
-    hard_flags = []
-    if pressure >= 180:
-        hard_flags.append('pressure extremely high')
-    if temperature >= 120:
-        hard_flags.append('temperature extremely high')
-    if vibration >= 8:
-        hard_flags.append('vibration extremely high')
-    if flow_rate <= 25:
-        hard_flags.append('flow rate critically low')
-    if humidity >= 85:
-        hard_flags.append('humidity critically high')
+    breach_flags = []
+    if temperature > TEMPERATURE_LIMIT:
+        breach_flags.append(f'temperature above {TEMPERATURE_LIMIT}C')
+    if pressure > PRESSURE_LIMIT:
+        breach_flags.append(f'pressure above {PRESSURE_LIMIT}')
+    if vibration > VIBRATION_LIMIT:
+        breach_flags.append(f'vibration above {VIBRATION_LIMIT} mm/s')
+    if flow_rate < FLOW_RATE_MIN:
+        breach_flags.append(f'flow rate below {FLOW_RATE_MIN} L/min')
+    if humidity > HUMIDITY_LIMIT:
+        breach_flags.append(f'humidity above {HUMIDITY_LIMIT}%')
 
-    soft_flags = []
-    if pressure >= 150:
-        soft_flags.append('high pressure')
-    if temperature >= 95:
-        soft_flags.append('high temperature')
-    if vibration >= 3:
-        soft_flags.append('elevated vibration')
-    if flow_rate <= 40:
-        soft_flags.append('reduced flow rate')
-    if humidity >= 70:
-        soft_flags.append('high humidity')
-
-    force_failure = bool(hard_flags) or len(soft_flags) >= 3
+    force_failure = bool(breach_flags)
     if not force_failure:
         return prediction
 
     existing_confidence = float(prediction.get('confidence_score', 0))
     prediction['prediction_label'] = 'FAILURE'
-    prediction['confidence_score'] = round(max(existing_confidence, 0.9 if hard_flags else 0.75), 4)
+    prediction['confidence_score'] = round(max(existing_confidence, 0.9), 4)
     prediction['override_applied'] = True
     prediction['override_reason'] = (
-        f"Safety override triggered due to: {', '.join(hard_flags or soft_flags)}"
+        f"Safety override triggered due to: {', '.join(breach_flags)}"
     )
     return prediction
 
@@ -202,14 +322,33 @@ def predict_failure(request):
             response_data['gemini_explanation'] = explanation
 
             if alert:
+                recent_readings = SensorReading.objects.filter(machine_id=sensor_data['machine_id'])[:10]
+                readings_list = SensorReadingSerializer(recent_readings, many=True).data
+                latest_reading = readings_list[0] if readings_list else None
+                # Keep /predict responsive: avoid a second heavy Gemini call here.
+                # Full report generation remains available via /reports/generate/.
+                detailed_report = explanation
+                detailed_report = enforce_report_consistency(detailed_report, latest_reading)
                 MaintenanceReport.objects.create(
                     machine_id=sensor_data['machine_id'],
                     alert=alert,
-                    gemini_explanation=explanation,
-                    root_cause=explanation,
+                    gemini_explanation=detailed_report,
+                    root_cause=detailed_report,
                 )
         except GeminiAPIException:
             response_data['gemini_explanation'] = build_fallback_explanation(sensor_data, prediction)
+            if alert:
+                recent_readings = SensorReading.objects.filter(machine_id=sensor_data['machine_id'])[:10]
+                readings_list = SensorReadingSerializer(recent_readings, many=True).data
+                latest_reading = readings_list[0] if readings_list else None
+                detailed_report = build_fallback_report(sensor_data['machine_id'], readings_list)
+                detailed_report = enforce_report_consistency(detailed_report, latest_reading)
+                MaintenanceReport.objects.create(
+                    machine_id=sensor_data['machine_id'],
+                    alert=alert,
+                    gemini_explanation=detailed_report,
+                    root_cause=detailed_report,
+                )
 
         return Response(response_data, status=status.HTTP_200_OK)
 
@@ -247,6 +386,69 @@ def get_alerts(request):
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+@api_view(['GET'])
+def get_alert_history(request):
+    completed_schedules = (
+        MaintenanceSchedule.objects.filter(status=MaintenanceSchedule.STATUS_COMPLETED)
+        .select_related('alert__sensor_reading')
+        .order_by('-completed_at', '-updated_at', '-created_at')
+    )
+    history = []
+
+    for schedule in completed_schedules:
+        alert = getattr(schedule, 'alert', None)
+        sensor_reading = getattr(alert, 'sensor_reading', None) if alert is not None else None
+
+        history.append(
+            {
+                'id': getattr(alert, 'id', schedule.id),
+                'created_at': schedule.completed_at or schedule.updated_at or schedule.created_at,
+                'machine_id': schedule.machine_id or getattr(sensor_reading, 'machine_id', None),
+                'alert_type': str(getattr(alert, 'prediction_label', 'FAILURE') or 'FAILURE').upper(),
+                'severity': (
+                    'CRITICAL'
+                    if str(getattr(alert, 'prediction_label', 'FAILURE') or 'FAILURE').upper() == 'FAILURE'
+                    else 'WARNING'
+                ),
+                'maintenance_date': schedule.scheduled_for,
+                'maintenance_status': 'Completed',
+                'schedule_id': schedule.id,
+            }
+        )
+
+    return Response(history, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def get_ignored_alerts(request):
+    ignored_alerts = (
+        Alert.objects.filter(
+            is_resolved=True,
+            resolution_action=Alert.RESOLUTION_IGNORED,
+        )
+        .select_related('sensor_reading')
+        .order_by('-resolved_at', '-created_at')
+    )
+
+    rows = []
+    for alert in ignored_alerts:
+        machine_id = getattr(alert.sensor_reading, 'machine_id', None)
+        alert_type = str(alert.prediction_label or 'UNKNOWN').upper()
+        severity = 'CRITICAL' if alert_type == 'FAILURE' else 'WARNING'
+        rows.append(
+            {
+                'id': alert.id,
+                'machine_id': machine_id,
+                'date_time': alert.resolved_at or alert.created_at,
+                'alert_type': alert_type,
+                'severity': severity,
+                'confidence_score': round(float(alert.confidence_score or 0) * 100, 1),
+            }
+        )
+
+    return Response(rows, status=status.HTTP_200_OK)
+
+
 @api_view(['POST'])
 def resolve_alert(request, alert_id):
     alert_manager = AlertManager()
@@ -254,6 +456,24 @@ def resolve_alert(request, alert_id):
 
     if alert is None:
         return Response({'error': f'Alert {alert_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    alert.resolution_action = Alert.RESOLUTION_RESOLVED
+    alert.save(update_fields=['resolution_action', 'updated_at'] if hasattr(alert, 'updated_at') else ['resolution_action'])
+
+    serializer = AlertSerializer(alert)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def ignore_alert(request, alert_id):
+    alert = Alert.objects.filter(id=alert_id).first()
+    if alert is None:
+        return Response({'error': f'Alert {alert_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    alert.is_resolved = True
+    alert.resolved_at = timezone.now()
+    alert.resolution_action = Alert.RESOLUTION_IGNORED
+    alert.save(update_fields=['is_resolved', 'resolved_at', 'resolution_action'])
 
     serializer = AlertSerializer(alert)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -282,10 +502,12 @@ def generate_report(request):
         return Response({'error': f'No readings found for {machine_id}'}, status=status.HTTP_404_NOT_FOUND)
 
     readings_list = SensorReadingSerializer(recent_readings, many=True).data
+    latest_reading = readings_list[0] if readings_list else None
 
     try:
         report_generator = GeminiReportGenerator()
         report_text = report_generator.generate_full_report(machine_id, readings_list)
+        report_text = enforce_report_consistency(report_text, latest_reading)
 
         report = MaintenanceReport.objects.create(
             machine_id=machine_id,
@@ -300,6 +522,7 @@ def generate_report(request):
 
     except GeminiAPIException as e:
         report_text = build_fallback_report(machine_id, readings_list)
+        report_text = enforce_report_consistency(report_text, latest_reading)
         report = MaintenanceReport.objects.create(
             machine_id=machine_id,
             gemini_explanation=report_text,
@@ -312,6 +535,16 @@ def generate_report(request):
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': f'Report generation failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['DELETE'])
+def delete_report(request, report_id):
+    report = MaintenanceReport.objects.filter(id=report_id).first()
+    if report is None:
+        return Response({'error': f'Report {report_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    report.delete()
+    return Response({'message': 'Report removed successfully.'}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET', 'POST'])
@@ -362,6 +595,12 @@ def complete_schedule(request, schedule_id):
     if schedule is None:
         return Response({'error': f'Schedule {schedule_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    if schedule.status == MaintenanceSchedule.STATUS_CANCELLED:
+        return Response(
+            {'error': 'Cancelled schedules cannot be completed.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     schedule.status = MaintenanceSchedule.STATUS_COMPLETED
     schedule.completed_at = timezone.now()
     schedule.save(update_fields=['status', 'completed_at', 'updated_at'])
@@ -370,6 +609,127 @@ def complete_schedule(request, schedule_id):
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+@api_view(['DELETE'])
+def cancel_schedule(request, schedule_id):
+    schedule = MaintenanceSchedule.objects.filter(id=schedule_id).first()
+    if schedule is None:
+        return Response({'error': f'Schedule {schedule_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if schedule.status == MaintenanceSchedule.STATUS_COMPLETED:
+        return Response(
+            {'error': 'Completed schedules cannot be cancelled.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if schedule.status == MaintenanceSchedule.STATUS_CANCELLED:
+        return Response(
+            {'error': 'Schedule is already cancelled.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    schedule.status = MaintenanceSchedule.STATUS_CANCELLED
+    schedule.save(update_fields=['status', 'updated_at'])
+    serializer = MaintenanceScheduleSerializer(schedule)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 @api_view(['GET'])
 def health_check(request):
     return Response({'status': 'healthy', 'service': 'Refinery Monitor API'}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def signup(request):
+    company_name = str(request.data.get('company_name', '')).strip()
+    sector = str(request.data.get('sector', '')).strip()
+    password = str(request.data.get('password', ''))
+
+    if not company_name or not sector or not password:
+        return Response(
+            {'error': 'company_name, sector, and password are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(password) < 6:
+        return Response(
+            {'error': 'Password must be at least 6 characters long.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if User.objects.filter(username__iexact=company_name).exists():
+        return Response(
+            {'error': 'A company with this name already exists.'},
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    user = User.objects.create_user(
+        username=company_name,
+        password=password,
+        first_name=sector,
+    )
+
+    return Response(
+        {
+            'message': 'Signup successful.',
+            'company_name': user.username,
+            'sector': user.first_name,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['POST'])
+def login(request):
+    company_name = str(request.data.get('company_name', '')).strip()
+    password = str(request.data.get('password', ''))
+
+    if not company_name or not password:
+        return Response(
+            {'error': 'company_name and password are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user = User.objects.filter(username__iexact=company_name).first()
+    if user is None:
+        return Response({'error': 'Invalid company name or password.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    authenticated_user = authenticate(username=user.username, password=password)
+    if authenticated_user is None:
+        return Response({'error': 'Invalid company name or password.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    token = f"{authenticated_user.username}-{int(timezone.now().timestamp())}"
+    return Response(
+        {
+            'message': 'Login successful.',
+            'token': token,
+            'company_name': authenticated_user.username,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
+def forgot_password(request):
+    company_name = str(request.data.get('company_name', '')).strip()
+    new_password = str(request.data.get('new_password', ''))
+
+    if not company_name or not new_password:
+        return Response(
+            {'error': 'company_name and new_password are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(new_password) < 6:
+        return Response(
+            {'error': 'New password must be at least 6 characters long.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user = User.objects.filter(username__iexact=company_name).first()
+    if user is None:
+        return Response(
+            {'error': 'No account found for this company name.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    user.set_password(new_password)
+    user.save(update_fields=['password'])
+
+    return Response({'message': 'Password reset successful.'}, status=status.HTTP_200_OK)

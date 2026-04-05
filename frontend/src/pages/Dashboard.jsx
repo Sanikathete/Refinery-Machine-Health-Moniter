@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { motion } from 'framer-motion'
+﻿import { useEffect, useMemo, useState } from 'react'
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -12,33 +10,70 @@ import {
 } from 'recharts'
 import api from '../api/axios'
 
-const MACHINE_OPTIONS = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
-const SENSOR_KEYS = ['temperature', 'pressure', 'vibration', 'flow_rate', 'humidity']
-const SENSOR_STYLES = {
-  temperature: { color: '#f3525a' },
-  pressure: { color: '#152440' },
-  vibration: { color: '#3f6db4' },
-  flow_rate: { color: '#4b9f8f' },
-  humidity: { color: '#e7a43b' },
-}
+const DEFAULT_MACHINES = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
+
+const SENSOR_CONFIG = [
+  {
+    key: 'temperature',
+    label: 'Temperature',
+    unit: '°C',
+    icon: 'fas fa-thermometer-half',
+    healthyColor: '#e53e3e',
+    lineColor: '#e53e3e',
+    warning: (value) => value > 91,
+    warningLabel: '> 91°C',
+  },
+  {
+    key: 'pressure',
+    label: 'Pressure',
+    unit: 'hPa',
+    icon: 'fas fa-tachometer-alt',
+    healthyColor: '#3182ce',
+    lineColor: '#2d3748',
+    warning: (value) => value > 225,
+    warningLabel: '> 225',
+  },
+  {
+    key: 'vibration',
+    label: 'Vibration',
+    unit: 'mm/s²',
+    icon: 'fas fa-wave-square',
+    healthyColor: '#805ad5',
+    lineColor: '#805ad5',
+    warning: (value) => value > 0.5,
+    warningLabel: '> 0.50 mm/s²',
+  },
+  {
+    key: 'flow_rate',
+    label: 'Flow Rate',
+    unit: 'L/min',
+    icon: 'fas fa-tint',
+    healthyColor: '#38a169',
+    lineColor: '#38a169',
+    warning: (value) => value < 116,
+    warningLabel: '< 116 L/min',
+  },
+  {
+    key: 'humidity',
+    label: 'Humidity',
+    unit: '%',
+    icon: 'fas fa-cloud',
+    healthyColor: '#d69e2e',
+    lineColor: '#d69e2e',
+    warning: (value) => value > 48,
+    warningLabel: '> 48%',
+  },
+]
 
 function formatAxisTime(timestampMs, index) {
   if (!timestampMs) return `#${index}`
   const date = new Date(timestampMs)
-  const now = new Date()
-  const isToday = date.toDateString() === now.toDateString()
-  return isToday
-    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 function formatFullTime(timestampMs, index) {
   if (!timestampMs) return `Reading #${index}`
   return new Date(timestampMs).toLocaleString()
-}
-
-function formatMetricLabel(metric) {
-  return metric.replace('_', ' ')
 }
 
 function normalizeChartData(payload) {
@@ -78,36 +113,61 @@ function CounterValue({ value }) {
   useEffect(() => {
     const nextValue = Number.isFinite(value) ? value : 0
     const start = performance.now()
-    const duration = 700
+    const duration = 800
 
     const tick = (now) => {
       const progress = Math.min((now - start) / duration, 1)
       setCounted(nextValue * progress)
-      if (progress < 1) {
-        requestAnimationFrame(tick)
-      }
+      if (progress < 1) requestAnimationFrame(tick)
     }
 
     requestAnimationFrame(tick)
+    return undefined
   }, [value])
 
   return <>{counted.toFixed(2)}</>
 }
 
 export default function Dashboard() {
-  const [machineId, setMachineId] = useState(MACHINE_OPTIONS[0])
+  const [machines, setMachines] = useState(DEFAULT_MACHINES)
+  const [machineId, setMachineId] = useState(DEFAULT_MACHINES[0])
   const [chartData, setChartData] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [newMachineId, setNewMachineId] = useState('')
+  const [addingMachine, setAddingMachine] = useState(false)
+  const [removingMachine, setRemovingMachine] = useState(false)
+
+  const refreshMachineList = async () => {
+    try {
+      const response = await api.get('/readings/')
+      const machineSet = new Set(DEFAULT_MACHINES)
+      ;(Array.isArray(response.data) ? response.data : []).forEach((item) => {
+        if (item.machine_id) machineSet.add(item.machine_id)
+      })
+      const nextMachines = [...machineSet]
+      setMachines(nextMachines)
+      if (!nextMachines.includes(machineId)) {
+        setMachineId(nextMachines[0])
+      }
+    } catch {
+      setMachines((prev) => (prev.length ? prev : DEFAULT_MACHINES))
+    }
+  }
 
   useEffect(() => {
+    refreshMachineList()
+  }, [])
+
+  useEffect(() => {
+    if (!machineId) return undefined
+
     const fetchReadings = async () => {
       setLoading(true)
       setError('')
       try {
-        const response = await api.get('/readings/', {
-          params: { machine_id: machineId },
-        })
+        const response = await api.get('/readings/', { params: { machine_id: machineId } })
         setChartData(normalizeChartData(response.data))
       } catch (fetchError) {
         setError(fetchError.message || 'Unable to fetch machine readings.')
@@ -117,59 +177,161 @@ export default function Dashboard() {
     }
 
     fetchReadings()
+    return undefined
   }, [machineId])
 
   const latestReading = useMemo(() => chartData[chartData.length - 1], [chartData])
 
+  const handleAddMachine = async (event) => {
+    event.preventDefault()
+    if (!newMachineId.trim()) return
+
+    setAddingMachine(true)
+    setError('')
+    try {
+      await api.post('/machines/', { machine_id: newMachineId.trim() })
+      await refreshMachineList()
+      setMachineId(newMachineId.trim())
+      setNewMachineId('')
+      setShowAddModal(false)
+    } catch {
+      const value = newMachineId.trim()
+      setMachines((prev) => (prev.includes(value) ? prev : [value, ...prev]))
+      setMachineId(value)
+      setNewMachineId('')
+      setShowAddModal(false)
+    } finally {
+      setAddingMachine(false)
+    }
+  }
+
+  const handleRemoveMachine = async () => {
+    if (!machineId) return
+    const confirmed = window.confirm(`Are you sure you want to remove ${machineId}?`)
+    if (!confirmed) return
+
+    setRemovingMachine(true)
+    setError('')
+    try {
+      await api.delete(`/machines/${machineId}/`)
+    } catch {
+      // Fall back to local list removal when the endpoint is unavailable.
+    } finally {
+      setMachines((prev) => {
+        const filtered = prev.filter((machine) => machine !== machineId)
+        const safe = filtered.length ? filtered : DEFAULT_MACHINES
+        setMachineId(safe[0])
+        return safe
+      })
+      setRemovingMachine(false)
+    }
+  }
+
   return (
-    <motion.section
-      className="page"
-      initial={{ opacity: 0, y: 24 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, ease: 'easeOut' }}
-    >
-      <h2 className="section-title">Machine Dashboard</h2>
-      <p className="section-subtitle">
-        Analyze live machine telemetry and historical sensor trends by equipment unit.
-      </p>
+    <section className="app-page dashboard-page">
+      <div className="template-header-card">
+        <div>
+          <div className="template-sublabel">LIVE SENSOR TELEMETRY</div>
+          <h2 className="template-page-title">Machine Dashboard</h2>
+        </div>
+        <div className="dashboard-controls-row">
+          <select
+            className="template-input template-select"
+            value={machineId}
+            onChange={(event) => setMachineId(event.target.value)}
+          >
+            {machines.map((machine) => (
+              <option key={machine} value={machine}>
+                {machine}
+              </option>
+            ))}
+          </select>
+          <button type="button" className="btn-template-primary" onClick={() => setShowAddModal(true)}>
+            + Add Machine
+          </button>
+          <button
+            type="button"
+            className="btn-outline-danger"
+            onClick={handleRemoveMachine}
+            disabled={removingMachine}
+          >
+            {removingMachine ? 'Removing...' : 'Remove Machine'}
+          </button>
+        </div>
+      </div>
 
-      <section className="dashboard-controls card">
-        <label htmlFor="machine-select">Select Machine</label>
-        <select
-          id="machine-select"
-          className="select"
-          value={machineId}
-          onChange={(event) => setMachineId(event.target.value)}
-          style={{ marginTop: '0.5rem', maxWidth: '260px' }}
-        >
-          {MACHINE_OPTIONS.map((machine) => (
-            <option key={machine} value={machine}>
-              {machine}
-            </option>
-          ))}
-        </select>
-        {loading ? <p className="status-text status-loading">Loading sensor data...</p> : null}
-        {error ? <p className="status-text status-error">{error}</p> : null}
-      </section>
+      {showAddModal ? (
+        <form className="inline-modal-card" onSubmit={handleAddMachine}>
+          <h3>Add Machine</h3>
+          <input
+            className="template-input"
+            type="text"
+            placeholder="Enter Machine ID"
+            value={newMachineId}
+            onChange={(event) => setNewMachineId(event.target.value)}
+          />
+          <div className="inline-modal-actions">
+            <button type="submit" className="btn-template-primary" disabled={addingMachine}>
+              {addingMachine ? 'Adding...' : 'Submit'}
+            </button>
+            <button type="button" className="btn-template-secondary" onClick={() => setShowAddModal(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : null}
 
-      <section className="chart-card card">
-        <h3>Historical Trend Charts</h3>
-        <div className="mini-charts-grid">
-          {SENSOR_KEYS.map((metric) => (
-            <article className="mini-chart-card" key={metric}>
-              <h4>{formatMetricLabel(metric)}</h4>
-              <div style={{ width: '100%', height: 170 }}>
+      {loading ? <p className="status-text status-loading">Loading sensor data...</p> : null}
+      {error ? <p className="status-text status-error">{error}</p> : null}
+
+      <div className="sensor-metrics-row">
+        {SENSOR_CONFIG.map((sensor) => {
+          const value = Number(latestReading?.[sensor.key] ?? 0)
+          const isWarning = sensor.warning(value)
+          const activeColor = isWarning ? '#e53e3e' : sensor.healthyColor
+
+          return (
+            <article key={sensor.key} className="sensor-metric-card">
+              <div className="sensor-metric-inner">
+                <div className="metric-icon-circle" style={{ backgroundColor: activeColor }}>
+                  <i className={sensor.icon} />
+                </div>
+                <div>
+                  <div className="metric-value" style={{ color: isWarning ? '#e53e3e' : '#1a2236' }}>
+                    <CounterValue value={value} /> {sensor.unit}
+                  </div>
+                  <div className="metric-label">{sensor.label}</div>
+                  <div className="metric-threshold">Warning: {sensor.warningLabel}</div>
+                </div>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <section className="charts-section">
+        <h3 className="template-accent-title">Historical Trend Charts</h3>
+        <p className="template-subcopy">Sensor readings over time for selected machine</p>
+
+        <div className="trend-chart-grid">
+          {SENSOR_CONFIG.map((sensor, index) => (
+            <article className="trend-chart-card" key={sensor.key}>
+              <h4>
+                <span className="sensor-dot" style={{ backgroundColor: sensor.healthyColor }} />
+                {sensor.label}
+              </h4>
+              <div style={{ width: '100%', height: 280 }}>
                 <ResponsiveContainer>
                   <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#d7dfeb" />
-                    <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={18} />
-                    <YAxis tick={{ fontSize: 10 }} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="time" tick={{ fontSize: 11, fill: '#718096' }} minTickGap={18} />
+                    <YAxis tick={{ fontSize: 11, fill: '#718096' }} />
                     <Tooltip labelFormatter={(value, payload) => payload?.[0]?.payload?.fullTime || value} />
                     <Line
                       type="monotone"
-                      dataKey={metric}
-                      stroke={SENSOR_STYLES[metric].color}
-                      strokeWidth={2}
+                      dataKey={sensor.key}
+                      stroke={sensor.lineColor}
+                      strokeWidth={2.5}
                       dot={false}
                     />
                   </LineChart>
@@ -179,23 +341,7 @@ export default function Dashboard() {
           ))}
         </div>
       </section>
-
-      <div className="metrics-grid">
-        {SENSOR_KEYS.map((metric, index) => (
-          <motion.article
-            className="metric-card card"
-            key={metric}
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.08 }}
-          >
-            <h4>{formatMetricLabel(metric)}</h4>
-            <p>
-              <CounterValue value={latestReading?.[metric] ?? 0} />
-            </p>
-          </motion.article>
-        ))}
-      </div>
-    </motion.section>
+    </section>
   )
 }
+

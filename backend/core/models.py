@@ -20,6 +20,13 @@ class SensorReading(models.Model):
 
 
 class Alert(models.Model):
+    RESOLUTION_RESOLVED = 'RESOLVED'
+    RESOLUTION_IGNORED = 'IGNORED'
+    RESOLUTION_CHOICES = [
+        (RESOLUTION_RESOLVED, 'Resolved'),
+        (RESOLUTION_IGNORED, 'Ignored'),
+    ]
+
     sensor_reading = models.ForeignKey(
         SensorReading,
         on_delete=models.CASCADE,
@@ -28,6 +35,11 @@ class Alert(models.Model):
     prediction_label = models.CharField(max_length=20)
     confidence_score = models.FloatField()
     is_resolved = models.BooleanField(default=False)
+    resolution_action = models.CharField(
+        max_length=20,
+        choices=RESOLUTION_CHOICES,
+        default=RESOLUTION_RESOLVED,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
 
@@ -63,9 +75,11 @@ class MaintenanceReport(models.Model):
 class MaintenanceSchedule(models.Model):
     STATUS_PENDING = 'PENDING'
     STATUS_COMPLETED = 'COMPLETED'
+    STATUS_CANCELLED = 'CANCELLED'
     STATUS_CHOICES = [
         (STATUS_PENDING, 'Pending'),
         (STATUS_COMPLETED, 'Completed'),
+        (STATUS_CANCELLED, 'Cancelled'),
     ]
 
     PRIORITY_LOW = 'LOW'

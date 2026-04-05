@@ -8,7 +8,7 @@ const api = axios.create({
     'Content-Type': 'application/json',
     Accept: 'application/json',
   },
-  timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS || 30000),
+  timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS || 60000),
 })
 
 api.interceptors.response.use(

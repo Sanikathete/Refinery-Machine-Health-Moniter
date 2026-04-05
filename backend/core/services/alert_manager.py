@@ -13,7 +13,11 @@ class AlertManager:
         return alert
 
     def get_pending_alerts(self):
-        return Alert.objects.filter(is_resolved=False)
+        return (
+            Alert.objects.filter(is_resolved=False)
+            .exclude(schedules__status='PENDING')
+            .distinct()
+        )
 
     def resolve_alert(self, alert_id):
         try:
@@ -27,6 +31,11 @@ class AlertManager:
         return alert
 
     def get_alerts_by_machine(self, machine_id):
-        return Alert.objects.filter(
-            sensor_reading__machine_id=machine_id
+        return (
+            Alert.objects.filter(
+                sensor_reading__machine_id=machine_id,
+                is_resolved=False,
+            )
+            .exclude(schedules__status='PENDING')
+            .distinct()
         )
