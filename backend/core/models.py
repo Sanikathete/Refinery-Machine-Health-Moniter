@@ -2,6 +2,7 @@ from django.db import models
 
 
 class SensorReading(models.Model):
+    company_scope = models.CharField(max_length=150, default='PUBLIC', db_index=True)
     machine_id = models.CharField(max_length=50)
     timestamp = models.DateTimeField(auto_now_add=True)
     temperature = models.FloatField()
@@ -52,6 +53,7 @@ class Alert(models.Model):
 
 
 class MaintenanceReport(models.Model):
+    company_scope = models.CharField(max_length=150, default='PUBLIC', db_index=True)
     machine_id = models.CharField(max_length=50)
     alert = models.ForeignKey(
         Alert,
@@ -73,6 +75,7 @@ class MaintenanceReport(models.Model):
 
 
 class MaintenanceSchedule(models.Model):
+    company_scope = models.CharField(max_length=150, default='PUBLIC', db_index=True)
     STATUS_PENDING = 'PENDING'
     STATUS_COMPLETED = 'COMPLETED'
     STATUS_CANCELLED = 'CANCELLED'

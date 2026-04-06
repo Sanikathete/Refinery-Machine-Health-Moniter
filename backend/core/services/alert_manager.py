@@ -12,9 +12,12 @@ class AlertManager:
         )
         return alert
 
-    def get_pending_alerts(self):
+    def get_pending_alerts(self, company_scope=None):
+        queryset = Alert.objects.filter(is_resolved=False)
+        if company_scope:
+            queryset = queryset.filter(sensor_reading__company_scope=company_scope)
         return (
-            Alert.objects.filter(is_resolved=False)
+            queryset
             .exclude(schedules__status='PENDING')
             .distinct()
         )
@@ -30,12 +33,15 @@ class AlertManager:
         alert.save()
         return alert
 
-    def get_alerts_by_machine(self, machine_id):
+    def get_alerts_by_machine(self, machine_id, company_scope=None):
+        queryset = Alert.objects.filter(
+            sensor_reading__machine_id=machine_id,
+            is_resolved=False,
+        )
+        if company_scope:
+            queryset = queryset.filter(sensor_reading__company_scope=company_scope)
         return (
-            Alert.objects.filter(
-                sensor_reading__machine_id=machine_id,
-                is_resolved=False,
-            )
+            queryset
             .exclude(schedules__status='PENDING')
             .distinct()
         )

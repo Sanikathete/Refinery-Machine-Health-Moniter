@@ -49,7 +49,7 @@ export default function Predict() {
       const raw = window.localStorage.getItem(PREDICTION_HISTORY_KEY)
       if (!raw) return []
       const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? parsed.slice(0, 10) : []
+      return Array.isArray(parsed) ? parsed.slice(-10) : []
     } catch {
       return []
     }

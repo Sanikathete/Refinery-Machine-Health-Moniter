@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { AUTH_TOKEN_KEY } from '../utils/auth'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/'
 
@@ -9,6 +10,18 @@ const api = axios.create({
     Accept: 'application/json',
   },
   timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS || 60000),
+})
+
+api.interceptors.request.use((config) => {
+  if (typeof window !== 'undefined') {
+    const token = window.localStorage.getItem(AUTH_TOKEN_KEY)
+    if (token) {
+      config.headers = config.headers || {}
+      config.headers.Authorization = `Bearer ${token}`
+      config.headers['X-Auth-Token'] = token
+    }
+  }
+  return config
 })
 
 api.interceptors.response.use(

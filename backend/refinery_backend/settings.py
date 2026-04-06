@@ -6,11 +6,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR / '.env', override=True)
 
-SECRET_KEY = os.getenv('SECRET_KEY')
 
-DEBUG = os.getenv('DEBUG', 'False') == 'True'
+def env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
+
+def env_list(name, default=''):
+    raw = os.getenv(name, default)
+    return [item.strip() for item in str(raw).split(',') if item.strip()]
+
+
+SECRET_KEY = os.getenv('SECRET_KEY', 'refinery-monitor-dev-insecure-key')
+
+DEBUG = env_bool('DEBUG', False)
+
+ALLOWED_HOSTS = env_list(
+    'ALLOWED_HOSTS',
+    'localhost,127.0.0.1,[::1],neurorefine.duckdns.org',
+)
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -63,11 +79,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'refinery_backend.wsgi.application'
 
-USE_SQLITE = os.getenv('USE_SQLITE')
-if USE_SQLITE is None:
-    USE_SQLITE = DEBUG
-else:
-    USE_SQLITE = USE_SQLITE.strip().lower() == 'true'
+USE_SQLITE = env_bool('USE_SQLITE', DEBUG)
 
 if USE_SQLITE:
     DATABASES = {
@@ -78,7 +90,9 @@ if USE_SQLITE:
     }
 else:
     db_sslmode = os.getenv('DB_SSLMODE', 'prefer').strip()
+    db_connect_timeout = int(os.getenv('DB_CONNECT_TIMEOUT', '10'))
     db_options = {'sslmode': db_sslmode} if db_sslmode else {}
+    db_options['connect_timeout'] = db_connect_timeout
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
@@ -88,7 +102,8 @@ else:
             'HOST': os.getenv('DB_HOST', ''),
             'PORT': os.getenv('DB_PORT', '5432'),
             'OPTIONS': db_options,
-            'CONN_MAX_AGE': int(os.getenv('DB_CONN_MAX_AGE', '60')),
+            'CONN_MAX_AGE': int(os.getenv('DB_CONN_MAX_AGE', '120')),
+            'CONN_HEALTH_CHECKS': env_bool('DB_CONN_HEALTH_CHECKS', True),
         }
     }
 
@@ -101,7 +116,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = os.getenv('TIME_ZONE', 'UTC')
 
 USE_I18N = True
 
@@ -129,7 +144,13 @@ AZURE_FRONTEND_URL = os.getenv('AZURE_FRONTEND_URL')
 if AZURE_FRONTEND_URL:
     CORS_ALLOWED_ORIGINS.append(AZURE_FRONTEND_URL)
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS += env_list('CORS_ALLOWED_ORIGINS', '')
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys(CORS_ALLOWED_ORIGINS))
+CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', DEBUG)
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', '')
+
+USE_X_FORWARDED_HOST = env_bool('USE_X_FORWARDED_HOST', True)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 ML_MODELS_DIR = BASE_DIR / 'models_pkl'
 
@@ -137,8 +158,12 @@ if HAS_WHITENOISE:
     STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', True)
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', True)
+    SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', True)
+

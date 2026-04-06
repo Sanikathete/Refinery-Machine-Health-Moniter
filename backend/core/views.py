@@ -1,6 +1,7 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+import re
 
 from django.utils import timezone
 from django.contrib.auth import authenticate, get_user_model
@@ -23,6 +24,24 @@ PRESSURE_LIMIT = 225.0
 VIBRATION_LIMIT = 0.50
 FLOW_RATE_MIN = 116.0
 HUMIDITY_LIMIT = 48.0
+
+
+def get_company_scope(request):
+    auth_header = str(request.headers.get('Authorization', '')).strip()
+    token = ''
+    if auth_header.lower().startswith('bearer '):
+        token = auth_header[7:].strip()
+    if not token:
+        token = str(request.headers.get('X-Auth-Token', '')).strip()
+    if not token:
+        return 'PUBLIC'
+
+    match = re.match(r'^(?P<company>.+)-(?P<timestamp>\d{9,})$', token)
+    if match:
+        company = str(match.group('company') or '').strip()
+        if company:
+            return company
+    return token
 
 
 def build_fallback_report(machine_id, readings_list):
@@ -285,6 +304,8 @@ def predict_failure(request):
 
     sensor_data = input_serializer.validated_data
 
+    company_scope = get_company_scope(request)
+
     try:
         processor = SensorDataProcessor()
         processor.validate(sensor_data)
@@ -295,6 +316,7 @@ def predict_failure(request):
         prediction = apply_safety_override(sensor_data, prediction)
 
         sensor_reading = SensorReading.objects.create(
+            company_scope=company_scope,
             machine_id=sensor_data['machine_id'],
             temperature=sensor_data['temperature'],
             pressure=sensor_data['pressure'],
@@ -322,7 +344,10 @@ def predict_failure(request):
             response_data['gemini_explanation'] = explanation
 
             if alert:
-                recent_readings = SensorReading.objects.filter(machine_id=sensor_data['machine_id'])[:10]
+                recent_readings = SensorReading.objects.filter(
+                    company_scope=company_scope,
+                    machine_id=sensor_data['machine_id'],
+                )[:10]
                 readings_list = SensorReadingSerializer(recent_readings, many=True).data
                 latest_reading = readings_list[0] if readings_list else None
                 # Keep /predict responsive: avoid a second heavy Gemini call here.
@@ -330,6 +355,7 @@ def predict_failure(request):
                 detailed_report = explanation
                 detailed_report = enforce_report_consistency(detailed_report, latest_reading)
                 MaintenanceReport.objects.create(
+                    company_scope=company_scope,
                     machine_id=sensor_data['machine_id'],
                     alert=alert,
                     gemini_explanation=detailed_report,
@@ -338,12 +364,16 @@ def predict_failure(request):
         except GeminiAPIException:
             response_data['gemini_explanation'] = build_fallback_explanation(sensor_data, prediction)
             if alert:
-                recent_readings = SensorReading.objects.filter(machine_id=sensor_data['machine_id'])[:10]
+                recent_readings = SensorReading.objects.filter(
+                    company_scope=company_scope,
+                    machine_id=sensor_data['machine_id'],
+                )[:10]
                 readings_list = SensorReadingSerializer(recent_readings, many=True).data
                 latest_reading = readings_list[0] if readings_list else None
                 detailed_report = build_fallback_report(sensor_data['machine_id'], readings_list)
                 detailed_report = enforce_report_consistency(detailed_report, latest_reading)
                 MaintenanceReport.objects.create(
+                    company_scope=company_scope,
                     machine_id=sensor_data['machine_id'],
                     alert=alert,
                     gemini_explanation=detailed_report,
@@ -362,11 +392,12 @@ def predict_failure(request):
 
 @api_view(['GET'])
 def get_sensor_readings(request):
+    company_scope = get_company_scope(request)
     machine_id = request.query_params.get('machine_id')
     if machine_id:
-        readings = SensorReading.objects.filter(machine_id=machine_id)[:50]
+        readings = SensorReading.objects.filter(company_scope=company_scope, machine_id=machine_id)[:50]
     else:
-        readings = SensorReading.objects.all()[:50]
+        readings = SensorReading.objects.filter(company_scope=company_scope)[:50]
 
     serializer = SensorReadingSerializer(readings, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -375,12 +406,13 @@ def get_sensor_readings(request):
 @api_view(['GET'])
 def get_alerts(request):
     alert_manager = AlertManager()
+    company_scope = get_company_scope(request)
     machine_id = request.query_params.get('machine_id')
 
     if machine_id:
-        alerts = alert_manager.get_alerts_by_machine(machine_id)
+        alerts = alert_manager.get_alerts_by_machine(machine_id, company_scope=company_scope)
     else:
-        alerts = alert_manager.get_pending_alerts()
+        alerts = alert_manager.get_pending_alerts(company_scope=company_scope)
 
     serializer = AlertSerializer(alerts, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -388,8 +420,12 @@ def get_alerts(request):
 
 @api_view(['GET'])
 def get_alert_history(request):
+    company_scope = get_company_scope(request)
     completed_schedules = (
-        MaintenanceSchedule.objects.filter(status=MaintenanceSchedule.STATUS_COMPLETED)
+        MaintenanceSchedule.objects.filter(
+            company_scope=company_scope,
+            status=MaintenanceSchedule.STATUS_COMPLETED,
+        )
         .select_related('alert__sensor_reading')
         .order_by('-completed_at', '-updated_at', '-created_at')
     )
@@ -421,8 +457,10 @@ def get_alert_history(request):
 
 @api_view(['GET'])
 def get_ignored_alerts(request):
+    company_scope = get_company_scope(request)
     ignored_alerts = (
         Alert.objects.filter(
+            sensor_reading__company_scope=company_scope,
             is_resolved=True,
             resolution_action=Alert.RESOLUTION_IGNORED,
         )
@@ -452,11 +490,17 @@ def get_ignored_alerts(request):
 @api_view(['POST'])
 def resolve_alert(request, alert_id):
     alert_manager = AlertManager()
-    alert = alert_manager.resolve_alert(alert_id)
+    company_scope = get_company_scope(request)
+    alert = (
+        Alert.objects.filter(id=alert_id, sensor_reading__company_scope=company_scope)
+        .select_related('sensor_reading')
+        .first()
+    )
 
     if alert is None:
         return Response({'error': f'Alert {alert_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    alert_manager.resolve_alert(alert.id)
     alert.resolution_action = Alert.RESOLUTION_RESOLVED
     alert.save(update_fields=['resolution_action', 'updated_at'] if hasattr(alert, 'updated_at') else ['resolution_action'])
 
@@ -466,7 +510,8 @@ def resolve_alert(request, alert_id):
 
 @api_view(['POST'])
 def ignore_alert(request, alert_id):
-    alert = Alert.objects.filter(id=alert_id).first()
+    company_scope = get_company_scope(request)
+    alert = Alert.objects.filter(id=alert_id, sensor_reading__company_scope=company_scope).first()
     if alert is None:
         return Response({'error': f'Alert {alert_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -481,11 +526,12 @@ def ignore_alert(request, alert_id):
 
 @api_view(['GET'])
 def get_reports(request):
+    company_scope = get_company_scope(request)
     machine_id = request.query_params.get('machine_id')
     if machine_id:
-        reports = MaintenanceReport.objects.filter(machine_id=machine_id)[:20]
+        reports = MaintenanceReport.objects.filter(company_scope=company_scope, machine_id=machine_id)[:20]
     else:
-        reports = MaintenanceReport.objects.all()[:20]
+        reports = MaintenanceReport.objects.filter(company_scope=company_scope)[:20]
 
     serializer = MaintenanceReportSerializer(reports, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -493,11 +539,12 @@ def get_reports(request):
 
 @api_view(['POST'])
 def generate_report(request):
+    company_scope = get_company_scope(request)
     machine_id = request.data.get('machine_id')
     if not machine_id:
         return Response({'error': 'machine_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    recent_readings = SensorReading.objects.filter(machine_id=machine_id)[:10]
+    recent_readings = SensorReading.objects.filter(company_scope=company_scope, machine_id=machine_id)[:10]
     if not recent_readings:
         return Response({'error': f'No readings found for {machine_id}'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -510,6 +557,7 @@ def generate_report(request):
         report_text = enforce_report_consistency(report_text, latest_reading)
 
         report = MaintenanceReport.objects.create(
+            company_scope=company_scope,
             machine_id=machine_id,
             gemini_explanation=report_text,
             root_cause=report_text,
@@ -524,6 +572,7 @@ def generate_report(request):
         report_text = build_fallback_report(machine_id, readings_list)
         report_text = enforce_report_consistency(report_text, latest_reading)
         report = MaintenanceReport.objects.create(
+            company_scope=company_scope,
             machine_id=machine_id,
             gemini_explanation=report_text,
             root_cause='Gemini unavailable. Generated local fallback summary.',
@@ -539,7 +588,8 @@ def generate_report(request):
 
 @api_view(['DELETE'])
 def delete_report(request, report_id):
-    report = MaintenanceReport.objects.filter(id=report_id).first()
+    company_scope = get_company_scope(request)
+    report = MaintenanceReport.objects.filter(id=report_id, company_scope=company_scope).first()
     if report is None:
         return Response({'error': f'Report {report_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -549,11 +599,12 @@ def delete_report(request, report_id):
 
 @api_view(['GET', 'POST'])
 def schedules(request):
+    company_scope = get_company_scope(request)
     if request.method == 'GET':
         machine_id = request.query_params.get('machine_id')
         status_filter = request.query_params.get('status')
 
-        queryset = MaintenanceSchedule.objects.all()
+        queryset = MaintenanceSchedule.objects.filter(company_scope=company_scope)
         if machine_id:
             queryset = queryset.filter(machine_id=machine_id)
         if status_filter:
@@ -570,11 +621,12 @@ def schedules(request):
     alert = None
     alert_id = payload.get('alert_id')
     if alert_id is not None:
-        alert = Alert.objects.filter(id=alert_id).first()
+        alert = Alert.objects.filter(id=alert_id, sensor_reading__company_scope=company_scope).first()
         if alert is None:
             return Response({'error': f'Alert {alert_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
     schedule = MaintenanceSchedule.objects.create(
+        company_scope=company_scope,
         machine_id=payload['machine_id'],
         alert=alert,
         scheduled_for=payload['scheduled_for'],
@@ -591,7 +643,8 @@ def schedules(request):
 
 @api_view(['PATCH'])
 def complete_schedule(request, schedule_id):
-    schedule = MaintenanceSchedule.objects.filter(id=schedule_id).first()
+    company_scope = get_company_scope(request)
+    schedule = MaintenanceSchedule.objects.filter(id=schedule_id, company_scope=company_scope).first()
     if schedule is None:
         return Response({'error': f'Schedule {schedule_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -611,7 +664,8 @@ def complete_schedule(request, schedule_id):
 
 @api_view(['DELETE'])
 def cancel_schedule(request, schedule_id):
-    schedule = MaintenanceSchedule.objects.filter(id=schedule_id).first()
+    company_scope = get_company_scope(request)
+    schedule = MaintenanceSchedule.objects.filter(id=schedule_id, company_scope=company_scope).first()
     if schedule is None:
         return Response({'error': f'Schedule {schedule_id} not found'}, status=status.HTTP_404_NOT_FOUND)
 
