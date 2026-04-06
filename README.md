@@ -7,6 +7,10 @@ It combines:
 - Maintenance scheduling workflow
 - Gemini-powered operational analysis and reports
 
+Live website:
+- https://neurorefine.duckdns.org
+- Health check: https://neurorefine.duckdns.org/api/health/
+
 ## 1. Current System Overview
 
 Frontend:
