@@ -11,28 +11,46 @@ class GeminiReportGenerator:
         if not api_key or api_key.startswith('placeholder'):
             raise GeminiAPIException("GEMINI_API_KEY is not configured in .env")
 
-        self.genai = self._load_genai_sdk()
-        self.genai.configure(api_key=api_key)
+        self.client = self._load_genai_client(api_key)
         self.model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
-        self.model = self.genai.GenerativeModel(self.model_name)
         self.request_timeout_seconds = float(os.getenv('GEMINI_TIMEOUT_SECONDS', '10'))
         self.max_retries = max(int(os.getenv('GEMINI_MAX_RETRIES', '3')), 1)
         self.retry_backoff_seconds = float(os.getenv('GEMINI_RETRY_BACKOFF_SECONDS', '1.2'))
 
-    def _load_genai_sdk(self):
+    def _load_genai_client(self, api_key):
         try:
-            import google.generativeai as genai
-            return genai
+            from google import genai
+            return genai.Client(api_key=api_key)
         except ImportError as import_error:
             raise GeminiAPIException(
-                "Gemini SDK is not installed. Install it with: pip install google-generativeai"
+                "Gemini SDK is not installed. Install it with: pip install google-genai"
             ) from import_error
+
+    def _extract_text(self, response):
+        direct_text = getattr(response, 'text', None)
+        if isinstance(direct_text, str) and direct_text.strip():
+            return direct_text.strip()
+
+        chunks = []
+        candidates = getattr(response, 'candidates', None) or []
+        for candidate in candidates:
+            content = getattr(candidate, 'content', None)
+            parts = getattr(content, 'parts', None) or []
+            for part in parts:
+                part_text = getattr(part, 'text', None)
+                if isinstance(part_text, str) and part_text.strip():
+                    chunks.append(part_text.strip())
+
+        if chunks:
+            return "\n".join(chunks).strip()
+
+        raise GeminiAPIException("Gemini response did not contain readable text.")
 
     def _generate_with_deadline(self, prompt):
         def _call_gemini():
-            return self.model.generate_content(
-                prompt,
-                request_options={'timeout': self.request_timeout_seconds},
+            return self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
             )
 
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -83,7 +101,7 @@ class GeminiReportGenerator:
 
         try:
             response = self._generate_with_retry(prompt, "Gemini explanation generation")
-            return response.text
+            return self._extract_text(response)
         except Exception as e:
             raise GeminiAPIException(f"Gemini API call failed: {e}")
 
@@ -151,6 +169,6 @@ class GeminiReportGenerator:
 
         try:
             response = self._generate_with_retry(prompt, "Gemini report generation")
-            return response.text
+            return self._extract_text(response)
         except Exception as e:
             raise GeminiAPIException(f"Gemini report generation failed: {e}")
