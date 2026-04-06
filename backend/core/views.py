@@ -57,71 +57,128 @@ def build_fallback_report(machine_id, readings_list):
             "Priority Level: Medium"
         )
 
+    def machine_family(machine_code):
+        code = str(machine_code or '').upper()
+        if code.startswith('PUMP'):
+            return 'pump'
+        if code.startswith('COMP'):
+            return 'compressor'
+        if code.startswith('VALVE'):
+            return 'valve'
+        return 'generic'
+
     latest = readings_list[0]
+    recent_window = readings_list[:3]
+    recent_window = recent_window if recent_window else readings_list
+
     temp = float(latest.get('temperature', 0))
     pressure = float(latest.get('pressure', 0))
     vibration = float(latest.get('vibration', 0))
     flow = float(latest.get('flow_rate', 0))
     humidity = float(latest.get('humidity', 0))
     latest_failure_flag = bool(latest.get('failure', False))
-    recent_failure_count = sum(1 for row in readings_list if bool(row.get('failure', False)))
+    short_window_failures = sum(1 for row in recent_window if bool(row.get('failure', False)))
 
-    anomalies = []
-    if temp > TEMPERATURE_LIMIT:
-        anomalies.append('high temperature')
-    if pressure > PRESSURE_LIMIT:
-        anomalies.append('high pressure')
-    if vibration > VIBRATION_LIMIT:
-        anomalies.append('elevated vibration')
-    if flow < FLOW_RATE_MIN:
-        anomalies.append('low flow rate')
-    if humidity > HUMIDITY_LIMIT:
-        anomalies.append('high humidity')
+    anomaly_flags = {
+        'temperature': temp > TEMPERATURE_LIMIT,
+        'pressure': pressure > PRESSURE_LIMIT,
+        'vibration': vibration > VIBRATION_LIMIT,
+        'flow_rate': flow < FLOW_RATE_MIN,
+        'humidity': humidity > HUMIDITY_LIMIT,
+    }
+    anomalies = [name.replace('_', ' ') for name, triggered in anomaly_flags.items() if triggered]
 
-    if anomalies or latest_failure_flag or recent_failure_count > 0:
-        status = f"Abnormal conditions detected ({', '.join(anomalies)})."
-        if not anomalies:
-            status = (
-                "Failure trend detected from recent model predictions, even though individual sensor values "
-                "are near threshold bands."
-            )
-        root_cause = (
-            "Most likely mechanical stress and process instability under current load, potentially linked to "
-            "rotating component wear, pressure-control drift, or restricted flow."
+    avg_temp = sum(float(row.get('temperature', 0)) for row in recent_window) / len(recent_window)
+    avg_pressure = sum(float(row.get('pressure', 0)) for row in recent_window) / len(recent_window)
+    avg_vibration = sum(float(row.get('vibration', 0)) for row in recent_window) / len(recent_window)
+    avg_flow = sum(float(row.get('flow_rate', 0)) for row in recent_window) / len(recent_window)
+    avg_humidity = sum(float(row.get('humidity', 0)) for row in recent_window) / len(recent_window)
+
+    family = machine_family(machine_id)
+    if family == 'compressor':
+        component_hint = "compressor stage loading, intercooler efficiency, or anti-surge control instability"
+        specific_checks = (
+            "1. Inspect compressor bearings and coupling alignment.\n"
+            "2. Verify suction/discharge pressure-control response and anti-surge logic.\n"
+            "3. Check inlet filter/fouling and flow restrictions.\n"
+            "4. Validate vibration sensor baseline and mounting integrity.\n"
+            "5. Schedule focused compressor inspection in next maintenance window."
         )
-        actions = (
-            "1. Inspect bearings, seals, and couplings for wear or misalignment.\n"
-            "2. Validate pressure-control loop response and check valves/line restrictions.\n"
-            "3. Verify vibration sensor mounting and recalibrate if readings are unstable.\n"
-            "4. Confirm flow instrumentation health and compare with process setpoints.\n"
-            "5. Schedule corrective maintenance in the nearest operational window."
+    elif family == 'pump':
+        component_hint = "pump impeller wear, cavitation onset, or seal degradation under load"
+        specific_checks = (
+            "1. Check pump seal condition, bearing temperature, and shaft alignment.\n"
+            "2. Inspect suction line integrity and possible cavitation indicators.\n"
+            "3. Validate discharge pressure control and recirculation path.\n"
+            "4. Recalibrate vibration and flow instrumentation.\n"
+            "5. Plan corrective pump maintenance in next available shift."
         )
-        if recent_failure_count >= 2 or latest_failure_flag:
-            priority = "High"
-        else:
-            priority = "Medium"
-        monitoring = (
-            "Monitoring Plan: Track temperature, pressure, and vibration every 15-30 minutes. "
-            f"Escalate immediately if temperature exceeds {TEMPERATURE_LIMIT}C, "
-            f"pressure exceeds {PRESSURE_LIMIT}, vibration exceeds {VIBRATION_LIMIT} mm/s, "
-            f"flow rate drops below {FLOW_RATE_MIN} L/min, or humidity exceeds {HUMIDITY_LIMIT}%."
+    elif family == 'valve':
+        component_hint = "valve stiction, actuator drift, or partial restriction in the control path"
+        specific_checks = (
+            "1. Stroke-test the control valve and confirm actuator response.\n"
+            "2. Inspect valve positioner calibration and control loop tuning.\n"
+            "3. Check downstream/upstream restrictions affecting flow behavior.\n"
+            "4. Confirm pressure transmitter and flow meter calibration.\n"
+            "5. Schedule valve trim/actuator service if drift persists."
         )
     else:
-        status = "No major anomalies detected in the latest reading."
+        component_hint = "mechanical stress and process-control drift under current operating profile"
+        specific_checks = (
+            "1. Inspect mechanical components for wear or misalignment.\n"
+            "2. Validate pressure/flow control response and line restrictions.\n"
+            "3. Verify vibration sensor mounting and recalibrate if unstable.\n"
+            "4. Compare readings with process setpoints and recent maintenance logs.\n"
+            "5. Schedule corrective checks in the nearest maintenance window."
+        )
+
+    if anomalies:
+        status = (
+            f"Abnormal conditions detected for {machine_id} "
+            f"({', '.join(anomalies)}). Latest reading requires attention."
+        )
+    elif latest_failure_flag:
+        status = (
+            f"Latest model outcome for {machine_id} indicates FAILURE despite near-threshold sensor values."
+        )
+    elif short_window_failures >= 2:
+        status = (
+            f"{machine_id} shows intermittent instability in the last {len(recent_window)} readings; "
+            "closer observation is required."
+        )
+    else:
+        status = (
+            f"{machine_id} is currently stable with no active threshold breach in the latest reading."
+        )
+
+    if anomalies or latest_failure_flag or short_window_failures >= 2:
         root_cause = (
-            "System appears stable with the current operating profile and no dominant fault signature."
+            f"Most likely cause is {component_hint}. Recent averages for {machine_id}: "
+            f"Temp {avg_temp:.1f}C, Pressure {avg_pressure:.1f}, Vibration {avg_vibration:.2f}, "
+            f"Flow {avg_flow:.1f} L/min, Humidity {avg_humidity:.1f}%."
+        )
+        actions = specific_checks
+        priority = "High" if latest_failure_flag or len(anomalies) >= 2 or short_window_failures >= 2 else "Medium"
+    else:
+        root_cause = (
+            f"No dominant failure signature observed for {machine_id}. "
+            f"Recent averages are within expected operating band: Temp {avg_temp:.1f}C, "
+            f"Pressure {avg_pressure:.1f}, Vibration {avg_vibration:.2f}, "
+            f"Flow {avg_flow:.1f} L/min, Humidity {avg_humidity:.1f}%."
         )
         actions = (
-            "1. Continue preventive maintenance as per schedule.\n"
-            "2. Verify calibration of pressure and flow sensors during routine checks.\n"
-            "3. Keep vibration trend monitoring active for early anomaly detection.\n"
-            "4. Maintain housekeeping around humidity and cooling control."
+            "1. Continue routine preventive maintenance for this machine class.\n"
+            "2. Keep pressure, flow, and vibration trend checks active each shift.\n"
+            "3. Reconfirm sensor calibration during planned maintenance.\n"
+            "4. Escalate if two consecutive readings breach thresholds."
         )
         priority = "Low"
-        monitoring = (
-            "Monitoring Plan: Continue standard interval logging and escalate if any reading drifts "
-            "beyond operating bands."
-        )
+
+    monitoring = (
+        "Monitoring Plan: Check this machine every 30 minutes for the next 4 hours, then hourly for 24 hours. "
+        f"Escalate immediately if temperature > {TEMPERATURE_LIMIT}C, pressure > {PRESSURE_LIMIT}, "
+        f"vibration > {VIBRATION_LIMIT} mm/s, flow < {FLOW_RATE_MIN} L/min, or humidity > {HUMIDITY_LIMIT}%."
+    )
 
     return (
         f"Machine Status Summary: {status}\n"
@@ -550,10 +607,29 @@ def generate_report(request):
 
     readings_list = SensorReadingSerializer(recent_readings, many=True).data
     latest_reading = readings_list[0] if readings_list else None
+    latest_prediction = None
+    if latest_reading:
+        latest_reading_id = latest_reading.get('id')
+        latest_alert = None
+        if latest_reading_id is not None:
+            latest_alert = (
+                Alert.objects.filter(sensor_reading_id=latest_reading_id)
+                .order_by('-created_at')
+                .first()
+            )
+        latest_prediction = {
+            'prediction_label': 'FAILURE' if bool(latest_reading.get('failure', False)) else 'HEALTHY',
+            'confidence_score': float(getattr(latest_alert, 'confidence_score', 0)) if latest_alert else None,
+        }
 
     try:
         report_generator = GeminiReportGenerator()
-        report_text = report_generator.generate_full_report(machine_id, readings_list)
+        report_text = report_generator.generate_full_report(
+            machine_id=machine_id,
+            latest_reading=latest_reading or {},
+            recent_readings=readings_list,
+            latest_prediction=latest_prediction or {},
+        )
         report_text = enforce_report_consistency(report_text, latest_reading)
 
         report = MaintenanceReport.objects.create(

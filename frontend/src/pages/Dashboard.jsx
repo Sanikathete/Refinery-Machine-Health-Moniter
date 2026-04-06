@@ -22,6 +22,8 @@ const SENSOR_CONFIG = [
     lineColor: '#e53e3e',
     warning: (value) => value > 91,
     warningLabel: '> 91°C',
+    chartDomain: [0, 140],
+    validRange: [0, 200],
   },
   {
     key: 'pressure',
@@ -32,6 +34,8 @@ const SENSOR_CONFIG = [
     lineColor: '#2d3748',
     warning: (value) => value > 225,
     warningLabel: '> 225',
+    chartDomain: [0, 260],
+    validRange: [0, 300],
   },
   {
     key: 'vibration',
@@ -42,6 +46,8 @@ const SENSOR_CONFIG = [
     lineColor: '#805ad5',
     warning: (value) => value > 0.5,
     warningLabel: '> 0.50 mm/s²',
+    chartDomain: [0, 12],
+    validRange: [0, 20],
   },
   {
     key: 'flow_rate',
@@ -52,6 +58,8 @@ const SENSOR_CONFIG = [
     lineColor: '#38a169',
     warning: (value) => value < 116,
     warningLabel: '< 116 L/min',
+    chartDomain: [0, 220],
+    validRange: [0, 300],
   },
   {
     key: 'humidity',
@@ -62,8 +70,15 @@ const SENSOR_CONFIG = [
     lineColor: '#d69e2e',
     warning: (value) => value > 48,
     warningLabel: '> 48%',
+    chartDomain: [0, 100],
+    validRange: [0, 100],
   },
 ]
+
+const SENSOR_RULES = SENSOR_CONFIG.reduce((acc, sensor) => {
+  acc[sensor.key] = { validRange: sensor.validRange }
+  return acc
+}, {})
 
 function formatAxisTime(timestampMs, index) {
   if (!timestampMs) return `#${index}`
@@ -81,14 +96,20 @@ function normalizeChartData(payload) {
 
   const parsed = payload.map((entry, index) => {
     const timestampMs = entry.timestamp ? new Date(entry.timestamp).getTime() : null
-    return {
+    const normalized = {
       timestampMs,
-      temperature: Number(entry.temperature ?? 0),
-      pressure: Number(entry.pressure ?? 0),
-      vibration: Number(entry.vibration ?? 0),
-      flow_rate: Number(entry.flow_rate ?? 0),
-      humidity: Number(entry.humidity ?? 0),
       originalIndex: index + 1,
+    }
+
+    Object.keys(SENSOR_RULES).forEach((key) => {
+      const rawValue = Number(entry[key])
+      const [min, max] = SENSOR_RULES[key].validRange
+      normalized[`${key}_raw`] = Number.isFinite(rawValue) ? rawValue : 0
+      normalized[key] = Number.isFinite(rawValue) && rawValue >= min && rawValue <= max ? rawValue : null
+    })
+
+    return {
+      ...normalized,
     }
   })
 
@@ -286,7 +307,7 @@ export default function Dashboard() {
 
       <div className="sensor-metrics-row">
         {SENSOR_CONFIG.map((sensor) => {
-          const value = Number(latestReading?.[sensor.key] ?? 0)
+          const value = Number(latestReading?.[`${sensor.key}_raw`] ?? latestReading?.[sensor.key] ?? 0)
           const isWarning = sensor.warning(value)
           const activeColor = isWarning ? '#e53e3e' : sensor.healthyColor
 
@@ -325,8 +346,11 @@ export default function Dashboard() {
                   <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                     <XAxis dataKey="time" tick={{ fontSize: 11, fill: '#718096' }} minTickGap={18} />
-                    <YAxis tick={{ fontSize: 11, fill: '#718096' }} />
-                    <Tooltip labelFormatter={(value, payload) => payload?.[0]?.payload?.fullTime || value} />
+                    <YAxis domain={sensor.chartDomain} tick={{ fontSize: 11, fill: '#718096' }} />
+                    <Tooltip
+                      labelFormatter={(value, payload) => payload?.[0]?.payload?.fullTime || value}
+                      formatter={(value) => [value == null ? 'N/A' : value, sensor.label]}
+                    />
                     <Line
                       type="monotone"
                       dataKey={sensor.key}

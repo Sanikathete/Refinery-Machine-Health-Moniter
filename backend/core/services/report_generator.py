@@ -87,9 +87,26 @@ class GeminiReportGenerator:
         except Exception as e:
             raise GeminiAPIException(f"Gemini API call failed: {e}")
 
-    def generate_full_report(self, machine_id, recent_readings):
+    def generate_full_report(self, machine_id, latest_reading, recent_readings, latest_prediction=None):
         readings_text = ""
-        latest_failure = bool(recent_readings[0].get('failure', False)) if recent_readings else False
+        latest_failure = bool((latest_reading or {}).get('failure', False))
+        latest_prediction_label = str((latest_prediction or {}).get('prediction_label', 'UNKNOWN')).upper()
+        latest_prediction_confidence = latest_prediction.get('confidence_score') if latest_prediction else None
+
+        machine_code = str(machine_id or '').upper()
+        if machine_code.startswith('PUMP'):
+            machine_type = 'pump'
+            machine_focus = 'hydraulic performance, cavitation risk, and seal/bearing health'
+        elif machine_code.startswith('COMP'):
+            machine_type = 'compressor'
+            machine_focus = 'compression stability, anti-surge behavior, and bearing/coupling stress'
+        elif machine_code.startswith('VALVE'):
+            machine_type = 'control valve'
+            machine_focus = 'valve stiction, actuator response, and control-loop stability'
+        else:
+            machine_type = 'rotating process equipment'
+            machine_focus = 'process stability and mechanical reliability'
+
         for i, reading in enumerate(recent_readings, 1):
             readings_text += (
                 f"Reading {i}: Temp={reading['temperature']}, "
@@ -98,18 +115,38 @@ class GeminiReportGenerator:
                 f"Failure={reading.get('failure', 'N/A')}\n"
             )
 
+        latest_reading_text = (
+            f"Latest reading only (primary basis): Temp={latest_reading.get('temperature')}, "
+            f"Pressure={latest_reading.get('pressure')}, Vibration={latest_reading.get('vibration')}, "
+            f"Flow={latest_reading.get('flow_rate')}, Humidity={latest_reading.get('humidity')}, "
+            f"Failure={latest_reading.get('failure')}"
+        )
+        prediction_text = (
+            f"Latest prediction for this machine: label={latest_prediction_label}, "
+            f"confidence={latest_prediction_confidence if latest_prediction_confidence is not None else 'N/A'}"
+        )
+
         prompt = (
-            f"You are a refinery maintenance expert. Generate a structured maintenance report "
-            f"for machine '{machine_id}' based on these recent sensor readings:\n\n"
+            "You are a refinery maintenance expert.\n"
+            f"Generate a structured maintenance report for machine '{machine_id}' ({machine_type}).\n"
+            f"Machine focus: {machine_focus}.\n\n"
+            "Use the latest reading and latest prediction as the PRIMARY source of truth. "
+            "Use older readings only to describe short trend context.\n\n"
+            f"{latest_reading_text}\n"
+            f"{prediction_text}\n\n"
+            "Recent context readings:\n"
             f"{readings_text}\n"
-            f"Important: The latest model outcome is {'FAILURE' if latest_failure else 'HEALTHY'}. "
-            f"Make your status summary consistent with this latest outcome.\n"
-            f"Include the following sections:\n"
-            f"1. Machine Status Summary\n"
-            f"2. Root Cause Analysis (identify the most likely cause of any anomalies)\n"
-            f"3. Recommended Actions (specific maintenance steps)\n"
-            f"4. Priority Level (Critical, High, Medium, Low)\n\n"
-            f"Keep the report concise and actionable."
+            f"Hard rule: The final status must align with latest model outcome "
+            f"({'FAILURE' if latest_failure else 'HEALTHY'}).\n"
+            "Do not write generic text reused across machine types.\n"
+            "Mention machine-specific failure modes and checks relevant to this machine type.\n\n"
+            "Return plain text with exactly these sections:\n"
+            "1. Machine Status Summary\n"
+            "2. Root Cause Analysis\n"
+            "3. Recommended Actions (numbered, 4-6 points)\n"
+            "4. Priority Level (Critical, High, Medium, Low)\n"
+            "5. Why This Applies To This Machine\n\n"
+            "Keep it concise, practical, and actionable."
         )
 
         try:
