@@ -83,7 +83,7 @@ const SENSOR_RULES = SENSOR_CONFIG.reduce((acc, sensor) => {
 function formatAxisTime(timestampMs, index) {
   if (!timestampMs) return `#${index}`
   const date = new Date(timestampMs)
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 }
 
 function formatFullTime(timestampMs, index) {
