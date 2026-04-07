@@ -14,7 +14,7 @@ Live website:
 ## 1. Current System Overview
 
 Frontend:
-- React + Vite
+- React 
 - Dashboard, Predict, Alerts, Reports, Auth pages
 
 Backend:
