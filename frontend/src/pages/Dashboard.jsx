@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   CartesianGrid,
   Line,
@@ -159,6 +159,7 @@ export default function Dashboard() {
   const [newMachineId, setNewMachineId] = useState('')
   const [addingMachine, setAddingMachine] = useState(false)
   const [removingMachine, setRemovingMachine] = useState(false)
+  const fetchSequenceRef = useRef(0)
 
   const refreshMachineList = async () => {
     try {
@@ -185,14 +186,20 @@ export default function Dashboard() {
     if (!machineId) return undefined
 
     const fetchReadings = async () => {
+      const sequence = (fetchSequenceRef.current += 1)
       setLoading(true)
       setError('')
+      setChartData([])
       try {
         const response = await api.get('/readings/', { params: { machine_id: machineId } })
+        if (sequence !== fetchSequenceRef.current) return
         setChartData(normalizeChartData(response.data))
       } catch (fetchError) {
+        if (sequence !== fetchSequenceRef.current) return
+        setChartData([])
         setError(fetchError.message || 'Unable to fetch machine readings.')
       } finally {
+        if (sequence !== fetchSequenceRef.current) return
         setLoading(false)
       }
     }
@@ -368,4 +375,5 @@ export default function Dashboard() {
     </section>
   )
 }
+
 

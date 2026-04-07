@@ -2,7 +2,6 @@
 import api from '../api/axios'
 
 const MACHINE_OPTIONS = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
-const PREDICTION_HISTORY_KEY = 'neurorefine_prediction_history_v1'
 
 function cleanMarkdownText(text) {
   if (!text) return ''
@@ -30,8 +29,7 @@ function buildPreview(text) {
 export default function Reports() {
   const [reports, setReports] = useState([])
   const [expandedReportId, setExpandedReportId] = useState(null)
-  const [generateMachine, setGenerateMachine] = useState('')
-  const [availableMachines, setAvailableMachines] = useState([])
+  const [generateMachine, setGenerateMachine] = useState(MACHINE_OPTIONS[0] || '')
   const [machineStatusMap, setMachineStatusMap] = useState({})
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -42,32 +40,13 @@ export default function Reports() {
     setLoading(true)
     setError('')
     try {
-      let predictedMachines = []
-      try {
-        const raw = window.localStorage.getItem(PREDICTION_HISTORY_KEY)
-        const parsed = raw ? JSON.parse(raw) : []
-        if (Array.isArray(parsed)) {
-          const recentHistory = parsed.slice(-10)
-          predictedMachines = [
-            ...new Set(
-              recentHistory
-                .map((item) => item?.machine_id)
-                .filter((machineId) => MACHINE_OPTIONS.includes(machineId)),
-            ),
-          ]
-        }
-      } catch {
-        predictedMachines = []
-      }
-
-      setAvailableMachines(predictedMachines)
-      if (!predictedMachines.includes(generateMachine)) {
-        setGenerateMachine(predictedMachines[0] || '')
+      if (!MACHINE_OPTIONS.includes(generateMachine)) {
+        setGenerateMachine(MACHINE_OPTIONS[0] || '')
       }
 
       const response = await api.get('/reports/')
       const allReports = Array.isArray(response.data) ? response.data : []
-      const nextReports = allReports.filter((report) => predictedMachines.includes(report?.machine_id))
+      const nextReports = allReports.filter((report) => MACHINE_OPTIONS.includes(report?.machine_id))
       setReports(nextReports)
 
       const uniqueMachines = [...new Set(nextReports.map((report) => report.machine_id).filter(Boolean))]
@@ -100,7 +79,7 @@ export default function Reports() {
 
   const handleGenerate = async () => {
     if (!generateMachine) {
-      setError('Run at least one prediction first, then generate reports for those machines.')
+      setError('Select a machine to generate a report.')
       return
     }
 
@@ -163,9 +142,8 @@ export default function Reports() {
             className="template-input template-select"
             value={generateMachine}
             onChange={(event) => setGenerateMachine(event.target.value)}
-            disabled={availableMachines.length === 0}
           >
-            {availableMachines.map((machine) => (
+            {MACHINE_OPTIONS.map((machine) => (
               <option value={machine} key={machine}>
                 {machine}
               </option>
@@ -174,7 +152,7 @@ export default function Reports() {
           <button
             className="btn-template-primary"
             onClick={handleGenerate}
-            disabled={generating || availableMachines.length === 0}
+            disabled={generating}
           >
             {generating ? (
               <span className="btn-loading-wrap">
@@ -245,9 +223,7 @@ export default function Reports() {
 
       {!loading && sortedReports.length === 0 ? (
         <p className="status-text">
-          {availableMachines.length === 0
-            ? 'No local prediction history found. Run a prediction first to unlock reports.'
-            : 'No reports for your predicted machines yet. Create one using the controls above.'}
+          No reports yet. Create one using the controls above.
         </p>
       ) : null}
     </section>
