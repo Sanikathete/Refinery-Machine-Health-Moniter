@@ -9,8 +9,8 @@ import {
   YAxis,
 } from 'recharts'
 import api from '../api/axios'
+import { MACHINE_OPTIONS } from '../constants/machines'
 
-const DEFAULT_MACHINES = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
 
 const SENSOR_CONFIG = [
   {
@@ -150,8 +150,8 @@ function CounterValue({ value }) {
 }
 
 export default function Dashboard() {
-  const [machines, setMachines] = useState(DEFAULT_MACHINES)
-  const [machineId, setMachineId] = useState(DEFAULT_MACHINES[0])
+  const [machines, setMachines] = useState(MACHINE_OPTIONS)
+  const [machineId, setMachineId] = useState(MACHINE_OPTIONS[0])
   const [chartData, setChartData] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -164,7 +164,7 @@ export default function Dashboard() {
   const refreshMachineList = async () => {
     try {
       const response = await api.get('/readings/')
-      const machineSet = new Set(DEFAULT_MACHINES)
+      const machineSet = new Set(MACHINE_OPTIONS)
       ;(Array.isArray(response.data) ? response.data : []).forEach((item) => {
         if (item.machine_id) machineSet.add(item.machine_id)
       })
@@ -174,7 +174,7 @@ export default function Dashboard() {
         setMachineId(nextMachines[0])
       }
     } catch {
-      setMachines((prev) => (prev.length ? prev : DEFAULT_MACHINES))
+      setMachines((prev) => (prev.length ? prev : MACHINE_OPTIONS))
     }
   }
 
@@ -247,7 +247,7 @@ export default function Dashboard() {
     } finally {
       setMachines((prev) => {
         const filtered = prev.filter((machine) => machine !== machineId)
-        const safe = filtered.length ? filtered : DEFAULT_MACHINES
+        const safe = filtered.length ? filtered : MACHINE_OPTIONS
         setMachineId(safe[0])
         return safe
       })
@@ -375,5 +375,6 @@ export default function Dashboard() {
     </section>
   )
 }
+
 
 

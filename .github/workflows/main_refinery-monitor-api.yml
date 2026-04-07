@@ -11,7 +11,9 @@ on:
 
 env:
   BACKEND_DIR: backend
+  FRONTEND_DIR: frontend
   PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
 
 jobs:
   ci:
@@ -38,6 +40,19 @@ jobs:
         working-directory: ${{ env.BACKEND_DIR }}
         run: |
           python -m compileall -q core refinery_backend
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json
+
+      - name: Build frontend (Vite)
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          npm ci
+          npm run build
 
       - name: Upload backend artifact for deploy
         uses: actions/upload-artifact@v4
@@ -78,4 +93,3 @@ jobs:
           app-name: refinery-monitor-api
           slot-name: Production
           package: backend
-

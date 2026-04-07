@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import api from '../api/axios'
+import { MACHINE_OPTIONS } from '../constants/machines'
 
-const MACHINE_OPTIONS = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
 
 function cleanMarkdownText(text) {
   if (!text) return ''
@@ -229,4 +229,5 @@ export default function Reports() {
     </section>
   )
 }
+
 

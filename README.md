@@ -252,6 +252,25 @@ Ensure VM/network:
 - PostgreSQL port `5432` allowed only from trusted Azure outbound IPs
 - DB authentication/pg_hba configured correctly
 
+### VM deploy (backend + frontend)
+
+If you host **both** Django API and the Vite frontend on the **same VM**, deploy by pulling latest code and rebuilding the frontend so the website never serves an old dropdown/graph bundle:
+
+```bash
+cd /home/azureuser/Refinery-Machine-Health-Moniter
+bash deploy_vm.sh
+```
+
+### Nginx cache safety (prevents “old UI” after deploy)
+
+If Nginx serves your frontend from `frontend/dist`, ensure `index.html` is **not cached**, otherwise browsers can keep loading an old JS bundle:
+
+```nginx
+location = /index.html {
+  add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
+}
+```
+
 CSV seeding:
 - Manual:
 ```bash

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import api from '../api/axios'
+import { MACHINE_OPTIONS } from '../constants/machines'
 
-const MACHINE_OPTIONS = ['PUMP_1', 'PUMP_2', 'COMP_1', 'COMP_2', 'VALVE_1', 'VALVE_2']
 const PREDICTION_HISTORY_KEY = 'neurorefine_prediction_history_v1'
 
 const initialForm = {
@@ -423,3 +423,4 @@ export default function Predict() {
     </section>
   )
 }
+
