@@ -11,13 +11,6 @@ Live website:
 - https://neurorefine.duckdns.org
 - Health check: https://neurorefine.duckdns.org/api/health/
 
-## Documentation
-
-- `docs/README.md`
-- VM deployment (Nginx + PEP 668 fix): `docs/DEPLOYMENT_VM.md`
-- Local development (Windows): `docs/LOCAL_DEVELOPMENT.md`
-- Architecture overview: `docs/ARCHITECTURE.md`
-
 ## 1. Current System Overview
 
 Frontend:
